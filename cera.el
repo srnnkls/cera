@@ -729,7 +729,8 @@ before the command, so a character just typed is still behind it."
                  completion-at-point-functions completion-in-region-function
                  completion-in-region-mode-hook cera-completion-space
                  cera-input-prefix cera-input-prefix-width cera-indent
-                 emulation-mode-map-alists minor-mode-overriding-map-alist)
+                 emulation-mode-map-alists minor-mode-overriding-map-alist
+                 font-lock-fontify-region-function)
   "Buffer-local settings the field reader borrows.
 A consumer arranges for its own through `cera-borrowed-locals'.")
 
@@ -868,8 +869,68 @@ Use `cera-read' to open one."
   :group 'cera
   :keymap cera-mode-map)
 
+(defcustom cera-input-fontifier nil
+  "How the text written into a field is coloured, or nil to leave it plain.
+The function is called with the first and last position of the field and
+may put `face' properties on that text.  The buffer\='s own colouring is
+held off there either way, so what it holds is never read as code."
+  :type '(choice (const :tag "Plain text" nil) function)
+  :group 'cera)
+
+(defvar cera--markdown-buffer nil
+  "The hidden buffer a field\='s text is coloured as Markdown in.")
+
+(defun cera-fontify-input-as-markdown (begin end)
+  "Colour the field between BEGIN and END as Markdown.
+The text is coloured in a buffer of its own, and only the faces it comes
+back with are put on the field, so the buffer holding it is untouched."
+  (when (require 'markdown-mode nil t)
+    (let ((text (buffer-substring-no-properties begin end))
+          (target (current-buffer)))
+      (unless (buffer-live-p cera--markdown-buffer)
+        (setq cera--markdown-buffer (get-buffer-create " *cera-markdown*" t))
+        (with-current-buffer cera--markdown-buffer
+          (delay-mode-hooks (markdown-mode))
+          (setq-local markdown-hide-markup nil)))
+      (with-current-buffer cera--markdown-buffer
+        (let ((inhibit-modification-hooks t))
+          (erase-buffer)
+          (insert text))
+        (font-lock-ensure)
+        (let ((position (point-min)))
+          (while (< position (point-max))
+            (let ((next (next-single-property-change
+                         position 'face nil (point-max)))
+                  (face (get-text-property position 'face)))
+              (when face
+                (with-current-buffer target
+                  (put-text-property (+ begin (1- position)) (+ begin (1- next))
+                                     'face face)))
+              (setq position next))))))))
+
+(defun cera--unfontified (session)
+  "Return a fontifier blind to SESSION\='s field.
+What is written into the field is prose, and the buffer it is borrowing
+would otherwise colour it as whatever language surrounds it."
+  (let ((original font-lock-fontify-region-function))
+    (lambda (begin end &optional loudly)
+      (let ((from (cera--session-begin session))
+            (to (cera--session-end session)))
+        (if (or (cera--session-closed session) (<= to begin) (<= end from))
+            (funcall original begin end loudly)
+          (when (< begin from) (funcall original begin from loudly))
+          (when (< to end) (funcall original to end loudly))
+          (remove-list-of-text-properties
+           (max begin from) (min end to)
+           '(face font-lock-face font-lock-multiline))
+          (when cera-input-fontifier
+            (with-silent-modifications
+              (funcall cera-input-fontifier from to)))
+          `(jit-lock-bounds ,begin . ,end))))))
+
 (defun cera--setup (session)
   "Install SESSION's input guard, completion, and modal key bindings."
+  (setq-local font-lock-fontify-region-function (cera--unfontified session))
   (setq-local cera--active session
               buffer-read-only nil
               buffer-auto-save-file-name nil

@@ -1174,4 +1174,45 @@ that completes on its own."
       (should (equal (cera-read nil "first") "first\nsecond\nthird")))
     (should (equal (buffer-string) "source\nnext\n"))))
 
+(ert-deftest cera-leaves-the-field-uncoloured-by-the-buffer-s-language ()
+  "The field holds prose, so the surrounding language must not colour it."
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (insert ";; a comment\n")
+    (font-lock-mode 1)
+    (goto-char (point-max))
+    (cera-test--reading
+        (lambda ()
+          (insert ";; not a comment, prose\n(defun nor-code ())")
+          (let ((bounds (cera--field-bounds)))
+            (font-lock-fontify-region (point-min) (point-max))
+            (should-not (text-property-not-all (car bounds) (cdr bounds) 'face nil))
+            (should (eq (get-text-property 6 'face) 'font-lock-comment-face)))
+          (cera-accept))
+      (should (string-prefix-p ";; not a comment" (cera-read nil ""))))
+    ;; The buffer colours its own text again once the field is gone.
+    (font-lock-fontify-region (point-min) (point-max))
+    (should (eq (get-text-property 6 'face) 'font-lock-comment-face))))
+
+(ert-deftest cera-a-fontifier-colours-the-field-and-nothing-else ()
+  "A consumer may colour the field itself, as prose rather than code."
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (insert ";; a comment\n")
+    (font-lock-mode 1)
+    (goto-char (point-max))
+    (let ((cera-input-fontifier
+           (lambda (begin end)
+             (put-text-property begin (min end (+ begin 4)) 'face 'bold))))
+      (cera-test--reading
+          (lambda ()
+            (insert "**bold** rest")
+            (font-lock-fontify-region (point-min) (point-max))
+            (let ((bounds (cera--field-bounds)))
+              (should (eq (get-text-property (car bounds) 'face) 'bold))
+              (should-not (get-text-property (+ 6 (car bounds)) 'face))
+              (should (eq (get-text-property 6 'face) 'font-lock-comment-face)))
+            (cera-accept))
+        (should (equal (cera-read nil "") "**bold** rest"))))))
+
 (provide 'cera-test)
