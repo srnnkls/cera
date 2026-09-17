@@ -1208,11 +1208,60 @@ that completes on its own."
           (lambda ()
             (insert "**bold** rest")
             (font-lock-fontify-region (point-min) (point-max))
-            (let ((bounds (cera--field-bounds)))
-              (should (eq (get-text-property (car bounds) 'face) 'bold))
-              (should-not (get-text-property (+ 6 (car bounds)) 'face))
+            (let* ((bounds (cera--field-bounds))
+                   (body (car (last (get-text-property (car bounds) 'face)))))
+              ;; The field's own face stays under what the fontifier put on,
+              ;; where an overlay would have covered it over.
+              (should (equal (get-text-property (car bounds) 'face)
+                             (list 'bold body)))
+              (should (equal (get-text-property (+ 6 (car bounds)) 'face)
+                             (list body)))
+              (should-not (cl-find-if (lambda (overlay) (overlay-get overlay 'face))
+                                      (overlays-at (car bounds))))
               (should (eq (get-text-property 6 'face) 'font-lock-comment-face)))
             (cera-accept))
         (should (equal (cera-read nil "") "**bold** rest"))))))
+
+(ert-deftest cera-asks-for-the-field-to-be-coloured-when-it-opens ()
+  "The field goes in without modification hooks, so nothing else asks."
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (insert ";; a comment\n")
+    (font-lock-mode 1)
+    (put-text-property (point-min) (point-max) 'fontified t)
+    (goto-char (point-max))
+    (cera-test--reading
+        (lambda ()
+          (let ((bounds (cera--field-bounds)))
+            (should (equal (text-property-not-all (car bounds) (cdr bounds)
+                                                  'fontified nil)
+                           nil))
+            ;; What the buffer had coloured already is left as it was.
+            (should (get-text-property 6 'fontified)))
+          (cera-accept))
+      (should (equal (cera-read nil "already written") "already written")))))
+
+(ert-deftest cera-colours-the-field-as-soon-as-it-is-drawn ()
+  "The display is never asked to colour the field, so drawing must."
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (insert ";; a comment\n")
+    (font-lock-mode 1)
+    (goto-char (point-max))
+    (let ((cera-input-fontifier
+           (lambda (begin end)
+             (put-text-property begin (min end (+ begin 4)) 'face 'bold))))
+      (cera-test--reading
+          (lambda ()
+            ;; No fontification pass has run, and the field is coloured anyway.
+            (let ((bounds (cera--field-bounds)))
+              (should (equal (get-text-property (car bounds) 'face)
+                             (list 'bold (cera--body-face)))))
+            (insert "more")
+            (let ((bounds (cera--field-bounds)))
+              (should (equal (get-text-property (- (cdr bounds) 1) 'face)
+                             (list (cera--body-face)))))
+            (cera-accept))
+        (should (equal (cera-read nil "already written") "already writtenmore"))))))
 
 (provide 'cera-test)

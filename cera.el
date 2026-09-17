@@ -382,11 +382,14 @@ A fixed number of overlays per window covers any length of input."
            (bracket (cera-pane-bracket pane))
            (continued (and bracket (cera--pane-decoration pane 'middle aligned)))
            (face (and (eq (cera-pane-kind pane) 'input)
+                      (not cera-input-fontifier)
                       (or (cera-pane-face pane) (cera--body-face)))))
       (cera--overlay session begin end 'face face
                      'line-prefix continued 'wrap-prefix continued
                      'display-line-numbers-disable
                      (eq (cera-pane-kind pane) 'input))
+      (when (and cera-input-fontifier (eq (cera-pane-kind pane) 'input))
+        (cera--colour-input session begin end))
       (when bracket
         (dolist (range (if (<= last begin)
                            (list (list begin end t t))
@@ -908,6 +911,31 @@ back with are put on the field, so the buffer holding it is untouched."
                                      'face face)))
               (setq position next))))))))
 
+(defun cera--colour-input (session begin end)
+  "Colour SESSION\='s field from BEGIN to END as the consumer asked.
+The field is coloured as it is drawn rather than waiting on the display
+to ask, which it does not do for text put in without modification hooks."
+  (with-silent-modifications
+    (remove-list-of-text-properties
+     begin end '(face font-lock-face font-lock-multiline))
+    (funcall cera-input-fontifier begin end)
+    (cera--underlay-body session begin end)))
+
+(defun cera--underlay-body (session begin end)
+  "Put SESSION\='s field face under whatever coloured BEGIN through END.
+The field carries its face as text rather than as an overlay wherever it
+colours itself, since an overlay would cover those colours over."
+  (let ((body (or (cera-pane-face (cera--session-input session))
+                  (cera--body-face)))
+        (position begin))
+    (while (< position end)
+      (let ((next (next-single-property-change position 'face nil end))
+            (face (get-text-property position 'face)))
+        (put-text-property position next 'face
+                           (append (if (listp face) face (list face))
+                                   (list body)))
+        (setq position next)))))
+
 (defun cera--unfontified (session)
   "Return a fontifier blind to SESSION\='s field.
 What is written into the field is prose, and the buffer it is borrowing
@@ -924,13 +952,19 @@ would otherwise colour it as whatever language surrounds it."
            (max begin from) (min end to)
            '(face font-lock-face font-lock-multiline))
           (when cera-input-fontifier
-            (with-silent-modifications
-              (funcall cera-input-fontifier from to)))
-          `(jit-lock-bounds ,begin . ,end))))))
+            (cera--colour-input session from to))
+          ;; Report the whole field back: it is coloured as one piece, and
+          ;; a caller told less would leave the rest of it holding old faces.
+          `(jit-lock-bounds ,(min begin from) . ,(max end to)))))))
 
 (defun cera--setup (session)
   "Install SESSION's input guard, completion, and modal key bindings."
   (setq-local font-lock-fontify-region-function (cera--unfontified session))
+  ;; The field is put in without modification hooks, so nothing has asked
+  ;; for it to be coloured; ask here, or it stays plain until it is edited.
+  (with-silent-modifications
+    (put-text-property (cera--session-begin session) (cera--session-end session)
+                       'fontified nil))
   (setq-local cera--active session
               buffer-read-only nil
               buffer-auto-save-file-name nil
