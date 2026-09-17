@@ -129,6 +129,13 @@ An empty supplied read-only TEXT hides the pane."
   id kind text bounds (bracket t) prefix (prefix-position 'bottom) face
   connection)
 
+(defun cera-set-pane-text (pane text)
+  "Set PANE's supplied TEXT, and return PANE.
+A consumer holds the struct but not its setters, which are known where
+the struct is, so the text it wants a pane opened with is set here."
+  (setf (cera-pane-text pane) text)
+  pane)
+
 (defvar cera-read-context-function nil
   "Optional function transforming the normalized panes of `cera-read'.
 Called with PANES and returning PANES, before any document changes.")
@@ -802,6 +809,13 @@ Existing consumer and adapter registrations are preserved."
 
 
 ;;;; Keys
+
+(defun cera-input-text ()
+  "Return what is written in the open field, or nil where none is open."
+  (when-let* ((session cera--active)
+              ((not (cera--session-closed session))))
+    (buffer-substring-no-properties (cera--session-begin session)
+                                    (cera--session-end session))))
 
 (defun cera-accept ()
   "Keep what was written into the field and close the reader."
