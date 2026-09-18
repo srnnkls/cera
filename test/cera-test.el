@@ -51,6 +51,12 @@
   (declare (indent 0) (debug (form)))
   `(should (eq (condition-case nil (progn ,form 'returned) (quit 'quit)) 'quit)))
 
+(defun cera-test--reserved-lines ()
+  "Return the lines the active field is holding free, or nil for none."
+  (when-let* ((spacer (cera--session-spacer cera--active))
+              (text (overlay-get spacer 'after-string)))
+    (length text)))
+
 (defun cera-test--source-ranges ()
   "Return the sorted ranges visibly underlined by the active input reader."
   (sort (cl-loop for overlay in (overlays-in (point-min) (point-max))
@@ -1263,5 +1269,26 @@ that completes on its own."
                              (list (cera--body-face)))))
             (cera-accept))
         (should (equal (cera-read nil "already written") "already writtenmore"))))))
+
+(ert-deftest cera-completion-space-may-be-asked-for-when-it-is-needed ()
+  "A frontend that draws above the field can ask for no room at all."
+  (with-temp-buffer
+    (insert "source\nnext")
+    (goto-char 2)
+    (cera-test--reading
+        (lambda ()
+          (let ((cera-completion-space (lambda () 4)))
+            (should (= (cera--completion-space) 4))
+            (cera--reserve-for-completion)
+            (should-not (cera-test--reserved-lines)))
+          (let ((completion-in-region-mode t))
+            (let ((cera-completion-space (lambda () 4)))
+              (cera--reserve-for-completion)
+              (should (= (cera-test--reserved-lines) 4)))
+            (let ((cera-completion-space (lambda () 0)))
+              (cera--reserve-for-completion)
+              (should-not (cera-test--reserved-lines))))
+          (cera-accept))
+      (should (equal (cera-read nil "note") "note")))))
 
 (provide 'cera-test)

@@ -67,6 +67,30 @@ command, so the request has to be made again once the field is up."
            nil))))))
 
 
+(defun corfu-cera--drawn-below ()
+  "Return the lines the popup covers below the point, or 0 for none.
+Corfu keeps the geometry of the popup it drew on the child frame, so
+where it went is read rather than guessed: one drawn above the point
+covers what is already behind it, and holding room below would only push
+the field, and the popup with it, further down."
+  (or (when-let* ((frame (bound-and-true-p corfu--frame))
+                  ((frame-live-p frame))
+                  ((frame-visible-p frame))
+                  (geometry (frame-parameter frame 'corfu--geometry))
+                  (position (posn-at-point))
+                  (line (default-line-height)))
+        (pcase-let* ((`(,_x ,y ,_width ,height) geometry)
+                     (point-y (+ (window-pixel-top) (cdr (posn-x-y position)))))
+          (when (> y point-y)
+            (min corfu-cera-space (ceiling height line)))))
+      0))
+
+(defun corfu-cera--fit (&rest _)
+  "Hold room below the field for the popup corfu has just drawn."
+  (when (and (bound-and-true-p cera--active)
+             (bound-and-true-p completion-in-region-mode))
+    (cera-reserve-space (corfu-cera--drawn-below))))
+
 (defun corfu-cera--setup (session)
   "Let Corfu complete in SESSION and hold room for its popup.
 The room is asked for in this buffer alone: the reader puts the value
@@ -79,7 +103,7 @@ back when the field closes."
                 corfu-auto-prefix 1
                 corfu-auto-trigger ""
                 corfu-quit-at-boundary t
-                cera-completion-space corfu-cera-space
+                cera-completion-space 0
                 corfu-cera--enabled-before (bound-and-true-p corfu-mode))
     (corfu-mode 1)
     (setq corfu-cera--timer
@@ -96,11 +120,14 @@ back when the field closes."
     (unless corfu-cera--enabled-before
       (corfu-mode -1))))
 
+(advice-add 'corfu--popup-show :after #'corfu-cera--fit)
+
 (add-hook 'cera-session-start-hook #'corfu-cera--setup)
 (add-hook 'cera-session-teardown-hook #'corfu-cera--teardown)
 
 (defun corfu-cera-unload-function ()
   "Remove this adapter's session hooks."
+  (advice-remove 'corfu--popup-show #'corfu-cera--fit)
   (remove-hook 'cera-session-start-hook #'corfu-cera--setup)
   (remove-hook 'cera-session-teardown-hook #'corfu-cera--teardown)
   nil)

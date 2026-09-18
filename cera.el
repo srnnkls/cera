@@ -81,8 +81,10 @@ A frontend that draws over the field, whether in a childframe or with
 overlays, covers the text below it unless somewhere is made for it to
 land; one that opens a window needs no room at all.  Zero reserves
 nothing, and a frontend that overlays turns this on — loading its
-integration file does."
-  :type 'natnum)
+integration file does.  A function of no arguments is called for the
+number instead, so a frontend that sometimes draws above the field can
+ask for nothing when it is about to."
+  :type '(choice natnum function))
 
 (defun cera-complete-with-table (bounds table)
   "Offer TABLE across the whole of BOUNDS, to whoever asks for it.
@@ -572,7 +574,14 @@ undo and completion are not changed.  Empty TEXT hides the pane."
   "Hold room below the field while completion is in region.
 `completion-in-region-mode' is set by every in-buffer completion
 frontend, so this asks no frontend anything."
-  (cera-reserve-space (if completion-in-region-mode cera-completion-space 0)))
+  (cera-reserve-space (if completion-in-region-mode (cera--completion-space) 0)))
+
+(defun cera--completion-space ()
+  "Return the lines `cera-completion-space' asks to be kept free."
+  (let ((lines (if (functionp cera-completion-space)
+                   (funcall cera-completion-space)
+                 cera-completion-space)))
+    (if (natnump lines) lines 0)))
 
 (defun cera-reserve-space (lines)
   "Reserve LINES of display space below the active field.
@@ -821,6 +830,21 @@ Existing consumer and adapter registrations are preserved."
     (buffer-substring-no-properties (cera--session-begin session)
                                     (cera--session-end session))))
 
+(defun cera-input-bounds ()
+  "Return the open field's input as a cons of its positions, or nil."
+  (when-let* ((session cera--active)
+              ((not (cera--session-closed session))))
+    (cera--field-bounds session)))
+
+(defun cera-set-input (text)
+  "Replace what is written in the open field with TEXT.
+The point lands at the end of it, as it does after writing it."
+  (unless cera--active (user-error "No field is open"))
+  (let ((bounds (cera--field-bounds)))
+    (delete-region (car bounds) (cdr bounds))
+    (goto-char (car bounds))
+    (insert (or text ""))))
+
 (defun cera-accept ()
   "Keep what was written into the field and close the reader."
   (interactive)
@@ -844,11 +868,7 @@ draws the entries."
   (unless cera--active (user-error "No field is open"))
   (let ((table (cera--session-table cera--active)))
     (unless table (user-error "This field was opened with nothing to recall"))
-    (let ((entry (completing-read "Recall: " table nil nil nil t))
-          (bounds (cera--field-bounds)))
-      (delete-region (car bounds) (cdr bounds))
-      (goto-char (car bounds))
-      (insert entry))))
+    (cera-set-input (completing-read "Recall: " table nil nil nil t))))
 
 (defun cera--without-completion (command)
   "Use COMMAND only when the completion menu is closed."
