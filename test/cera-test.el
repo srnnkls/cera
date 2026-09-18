@@ -1319,3 +1319,44 @@ that completes on its own."
       (should (equal (cera-read nil "") "written")))
     (should (eq (command-remapping #'self-insert-command) 'undefined))))
 
+(defun cera-test--virtual-overlay ()
+  "Return the overlay carrying the active session's virtual panes."
+  (seq-find (lambda (overlay) (overlay-get overlay 'before-string))
+            (overlays-in (point-min) (point-max))))
+
+(defun cera-test--panes-over (line)
+  "Open a field on LINE under a bracketless pane and return what is drawn.
+The answer is the anchored line's `line-prefix' and the tail of the text
+the panes are drawn as."
+  (with-temp-buffer
+    (insert "alpha\nbeta\n")
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (let (drawn
+          (cera-read-context-function
+           (lambda (panes)
+             (cons (cera-pane :id 'above :kind 'readonly :text "a note"
+                              :bracket nil :prefix nil)
+                   panes))))
+      (cera-test--reading
+          (lambda ()
+            (let ((overlay (cera-test--virtual-overlay))
+                  (prefix (get-char-property (line-beginning-position 0) 'line-prefix)))
+              (setq drawn
+                    (list (and (stringp prefix) (substring-no-properties prefix))
+                          (substring-no-properties
+                           (overlay-get overlay 'before-string)))))
+            (cera-accept))
+        (cera-read nil "" (cons (line-beginning-position) (line-end-position)) nil))
+      drawn)))
+
+(ert-deftest cera-panes-over-the-first-line-carry-its-bracket-themselves ()
+  "A line with none above it keeps its bracket in front of its own text."
+  (pcase-let ((`(,prefix ,drawn) (cera-test--panes-over 1)))
+    (should (equal prefix ""))
+    (should (string-suffix-p "╭ " drawn))
+    (should (string-match-p "a note" drawn)))
+  (pcase-let ((`(,prefix ,drawn) (cera-test--panes-over 2)))
+    (should (equal prefix "╭ "))
+    (should-not (string-suffix-p "╭ " drawn))
+    (should (string-prefix-p "\n" drawn))))

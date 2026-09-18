@@ -456,11 +456,13 @@ A fixed number of overlays per window covers any length of input."
             (cons window (window-body-width (or window (selected-window)))))
           (or (get-buffer-window-list (current-buffer) nil t) '(nil))))
 
-(defun cera--draw-virtual (session panes anchor)
+(defun cera--draw-virtual (session panes anchor &optional opening)
   "Display SESSION's virtual PANES in order at ANCHOR in each window.
 A line carries its `line-prefix' at its start, so an ANCHOR opening one
 would draw that line's bracket over the panes.  The overlay is put at the
-end of the line above instead, where the panes fill lines of their own."
+end of the line above instead, where the panes fill lines of their own.
+The first line of a buffer has no line above to put them on, so OPENING
+carries its bracket, drawn after the panes and before the line's text."
   (let ((origin (if (and (> anchor (point-min))
                          (save-excursion (goto-char anchor) (bolp)))
                     (1- anchor)
@@ -471,7 +473,14 @@ end of the line above instead, where the panes fill lines of their own."
                      (concat (unless (save-excursion (goto-char origin) (bolp)) "\n")
                              (mapconcat (lambda (pane)
                                           (cera--virtual-text pane (cdr geometry)))
-                                        panes ""))))))
+                                        panes "")
+                             opening)))))
+
+(defun cera--heads-the-buffer-p (panes start)
+  "Return non-nil when PANES are drawn over the line at START.
+Virtual panes hang off the end of the line above the one they precede,
+which the first line of a buffer has not got."
+  (and panes (= start (point-min))))
 
 (defun cera--draw-static (session)
   "Refresh SESSION's read-only panes, leaving its input overlays intact."
@@ -483,12 +492,9 @@ end of the line above instead, where the panes fill lines of their own."
     (dolist (pane (cl-remove-if-not #'cera--pane-visible-p
                                     (cera--session-panes session)))
       (if-let* ((start (cera--pane-start session pane)))
-          (progn
+          (let ((opening nil))
             (when (eq (cera-pane-kind pane) 'input)
               (setq tail (cera--session-tail session)))
-            (when pending
-              (cera--draw-virtual session (nreverse pending) start)
-              (setq pending nil))
             (when-let* ((bounds (cera-pane-bounds pane)))
               (save-excursion
                 (goto-char (max (car bounds) (1- (cdr bounds))))
@@ -499,13 +505,17 @@ end of the line above instead, where the panes fill lines of their own."
                     (while (< (point) end)
                       (let* ((next (min end (1+ (line-end-position))))
                              (aligned (cera--prefix-text
-                                       (get-char-property (point) 'line-prefix))))
+                                       (get-char-property (point) 'line-prefix)))
+                             (decoration (cera--pane-decoration
+                                          pane (cera--pane-endpoint
+                                                pane (= (point) start) (= next end))
+                                          aligned))
+                             (heads (and (= (point) start)
+                                         (cera--heads-the-buffer-p pending start))))
+                        (when heads (setq opening decoration))
                         (cera--overlay
                          session (point) next
-                         'line-prefix (cera--pane-decoration
-                                       pane (cera--pane-endpoint
-                                             pane (= (point) start) (= next end))
-                                       aligned)
+                         'line-prefix (if heads "" decoration)
                          'wrap-prefix (cera--pane-decoration
                                        pane 'middle (cera--prefix-text
                                                      (get-char-property (point) 'wrap-prefix))))
@@ -518,7 +528,10 @@ end of the line above instead, where the panes fill lines of their own."
                       (when (< (point) end)
                         (cera--overlay session (point) end 'face face
                                        'cera-source-mark t))
-                      (goto-char (min (cdr bounds) (1+ end)))))))))
+                      (goto-char (min (cdr bounds) (1+ end))))))))
+            (when pending
+              (cera--draw-virtual session (nreverse pending) start opening)
+              (setq pending nil)))
         (push pane pending)))
     (when pending
       (cera--draw-virtual session (nreverse pending) tail))))
