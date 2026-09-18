@@ -714,9 +714,17 @@ before the command, so a character just typed is still behind it."
   (set-text-properties (cera--session-begin session) (point) nil)
   (goto-char (cera--session-end session)))
 
+(defun cera--input-suppressed-p ()
+  "Return non-nil when the buffer's own map turns typing into nothing.
+Suppression is a remap of `self-insert-command', which a mode inherits
+through its map without descending from `special-mode': a compilation
+mode carries it from a parent map alone."
+  (when-let* ((map (current-local-map)))
+    (memq (lookup-key map [remap self-insert-command]) '(undefined ignore))))
+
 (defun cera--enable-input-map ()
   "Borrow text editing keys in buffers whose own map suppresses insertion."
-  (when (derived-mode-p 'special-mode)
+  (when (or (derived-mode-p 'special-mode) (cera--input-suppressed-p))
     (unless cera--source-map
       (setq-local cera--source-map (list (current-local-map))))
     ;; Special modes and their Evil auxiliary maps disable text entry.  Keep

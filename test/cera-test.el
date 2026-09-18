@@ -1292,3 +1292,30 @@ that completes on its own."
       (should (equal (cera-read nil "note") "note")))))
 
 (provide 'cera-test)
+(defvar cera-test-suppressed-mode-map
+  (let ((map (make-sparse-keymap))
+        (parent (make-sparse-keymap)))
+    (suppress-keymap parent)
+    (set-keymap-parent map parent)
+    map)
+  "A map that suppresses typing the way a compilation mode's does.")
+
+(define-derived-mode cera-test-suppressed-mode fundamental-mode "Suppressed"
+  "A mode suppressing typing without descending from `special-mode'.")
+
+(ert-deftest cera-a-field-takes-letters-where-the-mode-map-suppresses-them ()
+  "A buffer keeps typing to itself through a parent map alone."
+  (with-temp-buffer
+    (cera-test-suppressed-mode)
+    (insert "a line of log\n")
+    (goto-char (point-min))
+    (should (eq (command-remapping #'self-insert-command) 'undefined))
+    (cera-test--reading
+        (lambda ()
+          (should-not (command-remapping #'self-insert-command))
+          (should (eq (key-binding "a") 'self-insert-command))
+          (insert "written")
+          (cera-accept))
+      (should (equal (cera-read nil "") "written")))
+    (should (eq (command-remapping #'self-insert-command) 'undefined))))
+
