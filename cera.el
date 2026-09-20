@@ -86,6 +86,11 @@ number instead, so a frontend that sometimes draws above the field can
 ask for nothing when it is about to."
   :type '(choice natnum function))
 
+(defcustom cera-space-below 0
+  "Pixels left empty below the input, between it and the text that follows.
+Room held for completion comes below them."
+  :type 'natnum)
+
 (defun cera-complete-with-table (bounds table)
   "Offer TABLE across the whole of BOUNDS, to whoever asks for it.
 The prefix counts as too short for a frontend that completes on its own,
@@ -119,7 +124,7 @@ its own.")
 (cl-defstruct (cera--session (:constructor cera--make-session))
   buffer begin end origin tail table overlays spacer source-face accepted
   group bindings base-bindings modified depth closed
-  panes input static-overlays keymap width aligned)
+  panes input static-overlays keymap width aligned hl-line)
 
 (cl-defstruct (cera-pane (:constructor cera-pane))
   "A pane with ID, KIND, TEXT or BOUNDS, BRACKET, PREFIX and FACE.
@@ -179,6 +184,25 @@ Called with PANES and returning PANES, before any document changes.")
   "Characters between the point and the end of the input, before a command.
 The point comes back that far from the end when a command of the
 buffer's takes it out of the field.")
+
+(defvar-local cera--field-buffer nil
+  "Buffer the open field's input is written in, where that is another buffer.")
+
+(defvar-local cera--origin-buffer nil
+  "Buffer the field written here was opened for, where that is another buffer.")
+
+(defun cera-origin-buffer ()
+  "Return the buffer the open field was opened for.
+A backend that writes the input somewhere else, as the child frame does,
+puts the field's hooks and commands in that other buffer; a consumer
+holding on to the buffer it called `cera-read' in compares with this
+rather than with the current buffer."
+  (or cera--origin-buffer (current-buffer)))
+
+(defmacro cera--in-field (&rest body)
+  "Run BODY in the buffer the open field's input is written in."
+  (declare (indent 0) (debug t))
+  `(with-current-buffer (or cera--field-buffer (current-buffer)) ,@body))
 
 (defun cera--live-p ()
   "Return non-nil when a field reader is active in this buffer."
@@ -549,7 +573,9 @@ which the first line of a buffer has not got."
       (cera--draw-range session (cera--session-input session) begin (1+ end)
                         (concat (cera--line-number-pad) aligned))
       (setf (cera--session-spacer session)
-            (cera--overlay session end (1+ end) 'after-string space)))))
+            (cera--overlay session end (1+ end) 'after-string space
+                           'line-spacing (and (> cera-space-below 0)
+                                              cera-space-below))))))
 
 (defun cera--resize (&rest _)
   "Reflow virtual panes after a change of display width."
@@ -762,8 +788,8 @@ mode carries it from a parent map alone."
                  completion-at-point-functions completion-in-region-function
                  completion-in-region-mode-hook cera-completion-space
                  cera-input-prefix cera-input-prefix-width cera-indent
-                 emulation-mode-map-alists minor-mode-overriding-map-alist
-                 font-lock-fontify-region-function)
+                 cera-space-below emulation-mode-map-alists minor-mode-overriding-map-alist
+                 font-lock-fontify-region-function global-hl-line-mode)
   "Buffer-local settings the field reader borrows.
 A consumer arranges for its own through `cera-borrowed-locals'.")
 
@@ -846,39 +872,46 @@ Existing consumer and adapter registrations are preserved."
 
 (defun cera-input-text ()
   "Return what is written in the open field, or nil where none is open."
-  (when-let* ((session cera--active)
-              ((not (cera--session-closed session))))
-    (buffer-substring-no-properties (cera--session-begin session)
-                                    (cera--session-end session))))
+  (cera--in-field
+    (when-let* ((session cera--active)
+                ((not (cera--session-closed session))))
+      (buffer-substring-no-properties (cera--session-begin session)
+                                      (cera--session-end session)))))
 
 (defun cera-input-bounds ()
-  "Return the open field's input as a cons of its positions, or nil."
-  (when-let* ((session cera--active)
-              ((not (cera--session-closed session))))
-    (cera--field-bounds session)))
+  "Return the open field's input as a cons of its positions, or nil.
+The positions are in the buffer the input is written in, which
+`cera-origin-buffer' tells from the one the field was opened for."
+  (cera--in-field
+    (when-let* ((session cera--active)
+                ((not (cera--session-closed session))))
+      (cera--field-bounds session))))
 
 (defun cera-set-input (text)
   "Replace what is written in the open field with TEXT.
 The point lands at the end of it, as it does after writing it."
-  (unless cera--active (user-error "No field is open"))
-  (let ((bounds (cera--field-bounds)))
-    (delete-region (car bounds) (cdr bounds))
-    (goto-char (car bounds))
-    (insert (or text ""))))
+  (cera--in-field
+    (unless cera--active (user-error "No field is open"))
+    (let ((bounds (cera--field-bounds)))
+      (delete-region (car bounds) (cdr bounds))
+      (goto-char (car bounds))
+      (insert (or text "")))))
 
 (defun cera-accept ()
   "Keep what was written into the field and close the reader."
   (interactive)
-  (unless cera--active (user-error "No field is open"))
-  (setf (cera--session-accepted cera--active) t)
-  (exit-recursive-edit))
+  (cera--in-field
+    (unless cera--active (user-error "No field is open"))
+    (setf (cera--session-accepted cera--active) t)
+    (exit-recursive-edit)))
 
 (defun cera-cancel ()
   "Discard what was written into the field and close the reader."
   (interactive)
-  (unless cera--active (user-error "No field is open"))
-  (setf (cera--session-accepted cera--active) nil)
-  (exit-recursive-edit))
+  (cera--in-field
+    (unless cera--active (user-error "No field is open"))
+    (setf (cera--session-accepted cera--active) nil)
+    (exit-recursive-edit)))
 
 (defun cera-recall ()
   "Read an entry of the field's table in the minibuffer and write it here.
@@ -998,8 +1031,23 @@ would otherwise colour it as whatever language surrounds it."
           ;; a caller told less would leave the rest of it holding old faces.
           `(jit-lock-bounds ,(min begin from) . ,(max end to)))))))
 
+(declare-function hl-line-mode "hl-line" (&optional arg))
+(declare-function global-hl-line-unhighlight "hl-line" ())
+
+(defun cera--hold-off-hl-line (session)
+  "Take the current line's highlight off SESSION's buffer while it is open.
+The highlight is drawn over the field's own face; it comes back with
+the rest of the buffer's settings."
+  (when (bound-and-true-p hl-line-mode)
+    (setf (cera--session-hl-line session) t)
+    (hl-line-mode -1))
+  (when (bound-and-true-p global-hl-line-mode)
+    (setq-local global-hl-line-mode nil)
+    (global-hl-line-unhighlight)))
+
 (defun cera--setup (session)
   "Install SESSION's input guard, completion, and modal key bindings."
+  (cera--hold-off-hl-line session)
   (setq-local font-lock-fontify-region-function (cera--unfontified session))
   ;; The field is put in without modification hooks, so nothing has asked
   ;; for it to be coloured; ask here, or it stays plain until it is edited.
@@ -1076,6 +1124,7 @@ Closing a session already closed does nothing."
             (when-let* ((group (cera--session-group session)))
               (cancel-change-group group)))
         (cera--restore-locals (cera--session-bindings session))
+        (when (cera--session-hl-line session) (hl-line-mode 1))
         (cera--restore-base session)
         (set-buffer-modified-p (cera--session-modified session))
         (dolist (pane (cera--session-panes session))
@@ -1198,6 +1247,41 @@ document as it was."
               copy))
           panes))
 
+(autoload 'cera-frame-read-stack "cera-frame")
+
+(defcustom cera-input-backend 'auto
+  "Where a field's input is written.
+Its read-only panes are overlays in the buffer either way.
+`buffer' writes the input into a line of the buffer itself, and every
+line below it moves down by what is written.  `frame' keeps the buffer's
+lines as they are and writes the input in a child frame laid over the
+room it holds open for them, so the line numbers below the field stay
+where they were; a terminal has no child frames, and reads in the buffer
+whatever this says.  `auto' takes the frame wherever the display can
+show one."
+  :type '(choice (const :tag "Frame on a graphic display, buffer otherwise" auto)
+                 (const :tag "A child frame over the buffer" frame)
+                 (const :tag "A line of the buffer" buffer)))
+
+(defun cera-toggle-input-backend ()
+  "Swap the field between the buffer's own line and a child frame.
+The next field opened takes the other reader than the one this display
+would take now; a field already open stays as it is."
+  (interactive)
+  (setq cera-input-backend (if (eq (cera--input-backend) #'cera-frame-read-stack)
+                         'buffer
+                       'frame))
+  (message "Fields open in %s" (if (eq cera-input-backend 'frame)
+                                   "a child frame"
+                                 "the buffer")))
+
+(defun cera--input-backend ()
+  "Return the reader `cera-input-backend' chooses for this display."
+  (if (or (eq cera-input-backend 'frame)
+          (and (eq cera-input-backend 'auto) (display-graphic-p) (not noninteractive)))
+      #'cera-frame-read-stack
+    #'cera-read-stack-in-buffer))
+
 (defun cera-read-stack (panes table &optional keymap)
   "Read the single input of ordered PANES, completing on TABLE.
 PANES are `cera-pane' descriptors.  Existing bounded panes stay in place
@@ -1205,7 +1289,15 @@ and must occur in document line order without overlapping lines.
 The input opens after the preceding bounded pane, or the current line.
 Supplied read-only panes are overlay text, displayed in list order.
 KEYMAP and `cera-session-keymap' supplement the ordinary input bindings.
-Return the input string; cancellation signals `quit'."
+Return the input string; cancellation signals `quit'.
+`cera-input-backend' decides where the field is drawn."
+  (funcall (cera--input-backend) panes table keymap))
+
+(defun cera-read-stack-in-buffer (panes table &optional keymap)
+  "Read the input of PANES in a line put into the buffer, completing on TABLE.
+This is the reader `cera-read-stack' describes, drawn in the buffer's
+own text: KEYMAP supplements the input bindings and the result is what
+was written.  The line is taken out again before it is returned."
   (when cera--active (user-error "A field is already open"))
   (setq panes (cera--validate-panes panes))
   (unless (and (or (null keymap) (keymapp keymap))

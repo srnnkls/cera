@@ -95,6 +95,51 @@ long field costs what a keystroke in a short one does."
 	  (push calls allocations))))
     (should (= (nth 0 allocations) (nth 1 allocations)))))
 
+(ert-deftest cera-leaves-room-below-the-input ()
+  "`cera-space-below' pixels sit under the input's last row."
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (let ((cera-space-below 8))
+      (cera-test--reading
+	  (lambda ()
+	    (should (= (overlay-get (cera--session-spacer cera--active) 'line-spacing) 8))
+	    (cera-accept))
+	(cera-read nil "note"))))
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (cera-test--reading
+	(lambda ()
+	  (should-not (overlay-get (cera--session-spacer cera--active) 'line-spacing))
+	  (cera-accept))
+      (cera-read nil "note"))))
+
+(ert-deftest cera-holds-the-current-line-highlight-off-the-field ()
+  "The line highlight is off while the field is open and back afterwards."
+  (require 'hl-line)
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (hl-line-mode 1)
+    (cera-test--reading
+	(lambda ()
+	  (should-not hl-line-mode)
+	  (cera-accept))
+      (cera-read nil "note"))
+    (should hl-line-mode))
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (let ((global-hl-line-mode t))
+      (cera-test--reading
+	  (lambda ()
+	    (should-not global-hl-line-mode)
+	    (cera-accept))
+	(cera-read nil "note"))
+      (should global-hl-line-mode)
+      (should-not (local-variable-p 'global-hl-line-mode)))))
+
 (ert-deftest cera-keeps-the-point-a-buffer-puts-back-where-it-wants-it ()
   "A buffer holding the point after every command does not hold the field's.
 A dashboard repositions the point on `post-command-hook'; the field puts

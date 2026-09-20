@@ -67,6 +67,38 @@ command, so the request has to be made again once the field is up."
            nil))))))
 
 
+(defun corfu-cera--field-frame ()
+  "Return the child frame the field is written in, or nil where it is not."
+  (and (bound-and-true-p cera--origin-buffer)
+       (frame-parent (selected-frame))
+       (selected-frame)))
+
+(defun corfu-cera--over-parent (show &rest arguments)
+  "Draw the popup SHOW puts up with ARGUMENTS on the frame under the field.
+Corfu hangs its popup off the frame the field is written in, and lays
+it out inside that frame's few rows; here it is hung off that frame's
+parent instead, at the same place on the screen."
+  (if-let* ((field (corfu-cera--field-frame))
+            (parent (frame-parent field))
+            (offset (frame-position field)))
+      (cl-letf* ((height (symbol-function 'frame-pixel-height))
+                 (width (symbol-function 'frame-pixel-width))
+                 (window-frame (symbol-function 'window-frame))
+                 (make-frame (symbol-function 'corfu--make-frame))
+                 ((symbol-function 'frame-pixel-height)
+                  (lambda (&optional frame) (funcall height (or frame parent))))
+                 ((symbol-function 'frame-pixel-width)
+                  (lambda (&optional frame) (funcall width (or frame parent))))
+                 ((symbol-function 'window-frame)
+                  (lambda (&optional window)
+                    (if window (funcall window-frame window) parent)))
+                 ((symbol-function 'corfu--make-frame)
+                  (lambda (frame x y w h)
+                    (funcall make-frame frame
+                             (+ x (car offset)) (+ y (cdr offset)) w h))))
+        (apply show arguments))
+    (apply show arguments)))
+
 (defun corfu-cera--drawn-below ()
   "Return the lines the popup covers below the point, or 0 for none.
 Corfu keeps the geometry of the popup it drew on the child frame, so
@@ -80,7 +112,10 @@ the field, and the popup with it, further down."
                   (position (posn-at-point))
                   (line (default-line-height)))
         (pcase-let* ((`(,_x ,y ,_width ,height) geometry)
-                     (point-y (+ (window-pixel-top) (cdr (posn-x-y position)))))
+                     (point-y (+ (window-pixel-top) (cdr (posn-x-y position))
+                                 (if-let* ((field (corfu-cera--field-frame)))
+                                     (cdr (frame-position field))
+                                   0))))
           (when (> y point-y)
             (min corfu-cera-space (ceiling height line)))))
       0))
@@ -120,6 +155,7 @@ back when the field closes."
     (unless corfu-cera--enabled-before
       (corfu-mode -1))))
 
+(advice-add 'corfu--popup-show :around #'corfu-cera--over-parent)
 (advice-add 'corfu--popup-show :after #'corfu-cera--fit)
 
 (add-hook 'cera-session-start-hook #'corfu-cera--setup)
@@ -127,6 +163,7 @@ back when the field closes."
 
 (defun corfu-cera-unload-function ()
   "Remove this adapter's session hooks."
+  (advice-remove 'corfu--popup-show #'corfu-cera--over-parent)
   (advice-remove 'corfu--popup-show #'corfu-cera--fit)
   (remove-hook 'cera-session-start-hook #'corfu-cera--setup)
   (remove-hook 'cera-session-teardown-hook #'corfu-cera--teardown)
