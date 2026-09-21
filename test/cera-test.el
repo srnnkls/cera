@@ -1366,6 +1366,38 @@ that completes on its own."
                  (cera-pane :id 'probe :kind 'readonly :bracket nil :prefix nil
                             :text (list (cons "" 8) (cons "" 8)))))))
 
+(ert-deftest cera-a-pane-may-cut-a-long-line-short-instead-of-carrying-it ()
+  "A pane that does not wrap keeps a line of text to a line of itself."
+  (let ((long (make-string 30 ?x)))
+    (should (equal (mapcar #'car (cera--text-rows long 10 t))
+                   '("xxxxxxxxxx" "xxxxxxxxxx" "xxxxxxxxxx")))
+    (let ((cut (car (car (cera--text-rows long 10)))))
+      (should (= (string-width cut) 10))
+      (should (string-suffix-p "…" cut))
+      (should (= (length (cera--text-rows long 10)) 1)))
+    ;; The pane says which it wants, and wraps unless it says otherwise.
+    (should (cera-pane-wrap (cera-pane :id 'probe :kind 'readonly :text "")))
+    (should-not (cera-pane-wrap (cera-pane :id 'probe :kind 'readonly
+                                           :text "" :wrap nil)))))
+
+(ert-deftest cera-the-panes-hand-their-last-row-to-the-line-they-stand-on ()
+  "Ending the panes in a newline of their own leaves a blank line behind."
+  (with-temp-buffer
+    (insert "alpha\nbeta")
+    (goto-char (point-min))
+    (let ((origin (line-end-position)))
+      (should (eq (char-after origin) ?\n))
+      ;; The room the last row asked for is what the buffer's newline takes on.
+      (should (equal (cera--closing-newline
+                      (concat "\npane" (propertize "\n" 'line-spacing 7))
+                      origin)
+                     7))
+      (should (equal (cera--closing-newline "\npane\n" origin) 0))
+      ;; Nothing to hand over where the panes do not end a line, or where the
+      ;; line they stand on is not one either.
+      (should-not (cera--closing-newline "\npane" origin))
+      (should-not (cera--closing-newline "\npane\n" (point-min))))))
+
 (provide 'cera-test)
 (defvar cera-test-suppressed-mode-map
   (let ((map (make-sparse-keymap))

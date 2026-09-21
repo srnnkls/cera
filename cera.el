@@ -132,9 +132,11 @@ KIND is `readonly' or `input'.  BRACKET draws the pane's left bracket,
 and a pane with BRACKET nil shows its text alone.  PREFIX-POSITION is
 `top' or `bottom'.  BOUNDS refer to existing text in this buffer;
 supplied read-only TEXT is displayed without insertion.
-An empty supplied read-only TEXT hides the pane."
+An empty supplied read-only TEXT hides the pane.  WRAP carries a line
+too wide for the window onto the next row; a pane with WRAP nil cuts it
+short instead, and keeps a line of text to a line of the pane."
   id kind text bounds (bracket t) prefix (prefix-position 'bottom) face
-  connection)
+  connection (wrap t))
 
 (defun cera-set-pane-text (pane text)
   "Set PANE's supplied TEXT, and return PANE.
@@ -460,18 +462,20 @@ stack says nothing about stacking."
       (and (listp text)
            (cl-every (lambda (block) (string-empty-p (car block))) text)))))
 
-(defun cera--pane-rows (blocks width)
+(defun cera--pane-rows (blocks width &optional wrap)
   "Split BLOCKS into display rows no wider than WIDTH columns.
 The newline ending a block asks for the block\='s gap as room beneath it,
 which is where the display takes the space between blocks from.  A block
 with no text stands as a blank line, and one with no gap either is
 dropped: the display gives a line its full height or none at all, so
-there is no blank line thinner than the rest."
+there is no blank line thinner than the rest.  WRAP is carried through
+to `cera--text-rows\='."
   (let (rows)
     (dolist (block blocks)
       (let* ((text (car block))
              (gap (or (cdr block) 0))
-             (lines (cond ((not (string-empty-p text)) (cera--text-rows text width))
+             (lines (cond ((not (string-empty-p text))
+                           (cera--text-rows text width wrap))
                           ((> gap 0) (list (cons "" "\n"))))))
         (when (and lines (> gap 0))
           (setcdr (car (last lines))
@@ -480,20 +484,23 @@ there is no blank line thinner than the rest."
         (setq rows (append rows lines))))
     rows))
 
-(defun cera--text-rows (text width)
+(defun cera--text-rows (text width &optional wrap)
   "Split TEXT into display rows no wider than WIDTH columns.
 A row comes with the newline that ended it, which is where text asks for
-the room around its line; a row the width broke off ends in a plain one."
+the room around its line; a row the width broke off ends in a plain one.
+Without WRAP a line too wide is cut short rather than carried on."
   (let ((start 0) (length (length text)) rows)
     (while (<= start length)
       (let* ((break (or (string-search "\n" text start) length))
              (line (substring text start break))
              (newline (if (< break length) (substring text break (1+ break)) "\n")))
-        (while (> (string-width line) width)
-          (let ((part (truncate-string-to-width line width)))
-            (when (string-empty-p part) (setq part (substring line 0 1)))
-            (push (cons part "\n") rows)
-            (setq line (substring line (length part)))))
+        (if (not wrap)
+            (setq line (truncate-string-to-width line width nil nil t))
+          (while (> (string-width line) width)
+            (let ((part (truncate-string-to-width line width)))
+              (when (string-empty-p part) (setq part (substring line 0 1)))
+              (push (cons part "\n") rows)
+              (setq line (substring line (length part))))))
         (push (cons line newline) rows)
         (setq start (1+ break))))
     (nreverse rows)))
@@ -504,7 +511,8 @@ the room around its line; a row the width broke off ends in a plain one."
          (rows (cera--pane-rows
                 (cera--pane-blocks pane)
                 (max 1 (- width (cera--indent)
-                          (if bracket (cera--pane-width pane) 0) 1))))
+                          (if bracket (cera--pane-width pane) 0) 1))
+                (cera-pane-wrap pane)))
          (rows (if (and bracket (= (length rows) 1)
                         (not (cera-pane-connection pane)))
                    (append rows (list (cons "" "\n")))
@@ -551,13 +559,31 @@ carries its bracket, drawn after the panes and before the line's text."
                     (1- anchor)
                   anchor)))
     (dolist (geometry (cera--session-width session))
-      (cera--overlay session origin origin 'window (car geometry)
-                     'before-string
-                     (concat (unless (save-excursion (goto-char origin) (bolp)) "\n")
-                             (mapconcat (lambda (pane)
-                                          (cera--virtual-text pane (cdr geometry)))
-                                        panes "")
-                             opening)))))
+      (let* ((text (concat (unless (save-excursion (goto-char origin) (bolp)) "\n")
+                           (mapconcat (lambda (pane)
+                                        (cera--virtual-text pane (cdr geometry)))
+                                      panes "")
+                           opening))
+             (closing (cera--closing-newline text origin))
+             (overlay (cera--overlay session origin (if closing (1+ origin) origin)
+                                     'window (car geometry)
+                                     'before-string
+                                     (if closing
+                                         (substring text 0 (1- (length text)))
+                                       text))))
+        (when closing
+          (overlay-put overlay 'line-spacing closing)
+          (overlay-put overlay 'evaporate nil))))))
+
+(defun cera--closing-newline (text origin)
+  "Return the room TEXT asks for under its last row, for ORIGIN to hold.
+The panes end in a newline of their own, which leaves a blank line
+standing between them and the text below.  Dropping it hands that row to
+the buffer\='s own newline at ORIGIN, which then carries the room the row
+asked for."
+  (and (string-suffix-p "\n" text)
+       (eq (char-after origin) ?\n)
+       (or (get-text-property (1- (length text)) 'line-spacing text) 0)))
 
 (defun cera--heads-the-buffer-p (panes start)
   "Return non-nil when PANES are drawn over the line at START.
