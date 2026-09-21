@@ -367,7 +367,7 @@ as the same surface on a light theme and on a dark one."
   "Return non-nil unless PANE is supplied empty read-only text."
   (not (and (eq (cera-pane-kind pane) 'readonly)
             (not (cera-pane-bounds pane))
-            (equal (cera-pane-text pane) ""))))
+            (cera--pane-empty-p pane))))
 
 (defun cera--pane-endpoint (pane first last)
   "Choose PANE's corner for a row marked FIRST and LAST."
@@ -427,28 +427,86 @@ A fixed number of overlays per window covers any length of input."
                                          pane (cera--pane-endpoint pane first final)
                                          aligned))))))))
 
-(defun cera--pane-lines (text width)
-  "Split TEXT into display rows no wider than WIDTH columns."
+(defun cera--block-p (block)
+  "Return non-nil when BLOCK is a run of lines a pane may stack.
+A block is its text consed onto the pixels of blank space kept beneath
+it, which is plain data a consumer builds without loading cera."
+  (and (consp block) (stringp (car block)) (natnump (cdr block))))
+
+(defun cera--pane-blocks (pane)
+  "Return PANE's text as the blocks it is made of.
+A pane given a string is one block of it, so a consumer with nothing to
+stack says nothing about stacking."
+  (let ((text (cera-pane-text pane)))
+    (if (stringp text) (list (cons text 0)) text)))
+
+(defun cera--pane-content-p (text)
+  "Return non-nil when TEXT is what a supplied read-only pane may show."
+  (or (stringp text)
+      (and (consp text) (cl-every #'cera--block-p text))))
+
+(defun cera--copy-content (text)
+  "Return a copy of TEXT that a consumer cannot change under the pane."
+  (if (stringp text)
+      (copy-sequence text)
+    (mapcar (lambda (block) (cons (copy-sequence (car block)) (cdr block)))
+            text)))
+
+(defun cera--pane-empty-p (pane)
+  "Return non-nil when PANE was supplied nothing to show."
+  (let ((text (cera-pane-text pane)))
+    (if (stringp text)
+        (string-empty-p text)
+      (and (listp text)
+           (cl-every (lambda (block) (string-empty-p (car block))) text)))))
+
+(defun cera--pane-rows (blocks width)
+  "Split BLOCKS into display rows no wider than WIDTH columns.
+The newline ending a block asks for the block\='s gap as room beneath it,
+which is where the display takes the space between blocks from.  A block
+with no text is a spacer: it keeps its gap without a line of its own."
   (let (rows)
-    (dolist (line (split-string text "\n" nil))
-      (while (> (string-width line) width)
-        (let ((part (truncate-string-to-width line width)))
-          (when (string-empty-p part) (setq part (substring line 0 1)))
-          (push part rows)
-          (setq line (substring line (length part)))))
-      (push line rows))
+    (dolist (block blocks)
+      (let* ((text (car block))
+             (gap (or (cdr block) 0))
+             (lines (if (string-empty-p text)
+                        (list (cons "" (propertize "\n" 'line-height 1)))
+                      (cera--text-rows text width))))
+        (when (and lines (> gap 0))
+          (setcdr (car (last lines))
+                  (apply #'propertize "\n" 'line-spacing gap
+                         (text-properties-at 0 (cdr (car (last lines)))))))
+        (setq rows (append rows lines))))
+    rows))
+
+(defun cera--text-rows (text width)
+  "Split TEXT into display rows no wider than WIDTH columns.
+A row comes with the newline that ended it, which is where text asks for
+the room around its line; a row the width broke off ends in a plain one."
+  (let ((start 0) (length (length text)) rows)
+    (while (<= start length)
+      (let* ((break (or (string-search "\n" text start) length))
+             (line (substring text start break))
+             (newline (if (< break length) (substring text break (1+ break)) "\n")))
+        (while (> (string-width line) width)
+          (let ((part (truncate-string-to-width line width)))
+            (when (string-empty-p part) (setq part (substring line 0 1)))
+            (push (cons part "\n") rows)
+            (setq line (substring line (length part)))))
+        (push (cons line newline) rows)
+        (setq start (1+ break))))
     (nreverse rows)))
 
 (defun cera--virtual-text (pane width)
   "Render PANE's supplied text within WIDTH columns."
   (let* ((bracket (cera-pane-bracket pane))
-         (rows (cera--pane-lines
-                (cera-pane-text pane)
+         (rows (cera--pane-rows
+                (cera--pane-blocks pane)
                 (max 1 (- width (cera--indent)
                           (if bracket (cera--pane-width pane) 0) 1))))
          (rows (if (and bracket (= (length rows) 1)
                         (not (cera-pane-connection pane)))
-                   (append rows '(""))
+                   (append rows (list (cons "" "\n")))
                  rows))
          (count (length rows))
          (index 0))
@@ -458,11 +516,11 @@ A fixed number of overlays per window covers any length of input."
         (let* ((endpoint (cera--pane-endpoint pane (zerop index)
                                               (= (1+ index) count)))
                (body (if-let* ((face (cera-pane-face pane)))
-                         (propertize (copy-sequence row) 'face face)
-                       row)))
+                         (propertize (copy-sequence (car row)) 'face face)
+                       (car row))))
           (cl-incf index)
           (concat (and bracket (cera--pane-decoration pane endpoint))
-                  body "\n")))
+                  body (cdr row))))
       rows "")
      'line-prefix "" 'wrap-prefix "")))
 
@@ -593,9 +651,10 @@ undo and completion are not changed.  Empty TEXT hides the pane."
   (let ((pane (cl-find id (cera--session-panes cera--active)
                        :key #'cera-pane-id :test #'equal)))
     (unless (and pane (eq (cera-pane-kind pane) 'readonly)
-                 (not (cera-pane-bounds pane)) (stringp text))
+                 (not (cera-pane-bounds pane))
+                 (cera--pane-content-p text))
       (user-error "Not a supplied read-only pane: %S" id))
-    (setf (cera-pane-text pane) (copy-sequence text))
+    (setf (cera-pane-text pane) (cera--copy-content text))
     (cera--draw-static cera--active)
     t))
 
@@ -1237,13 +1296,13 @@ document as it was."
                                  (goto-char (max (car bounds) (1- (cdr bounds))))
                                  (min (point-max) (1+ (line-end-position))))
                       preceding (not input-seen)))
-            (unless (stringp (cera-pane-text pane))
+            (unless (cera--pane-content-p (cera-pane-text pane))
               (user-error "A read-only pane needs text or bounds"))))))
     (unless (= inputs 1) (user-error "A stack needs exactly one input pane")))
   (mapcar (lambda (pane)
             (let ((copy (copy-cera-pane pane)))
               (when-let* ((text (cera-pane-text pane)))
-                (setf (cera-pane-text copy) (copy-sequence text)))
+                (setf (cera-pane-text copy) (cera--copy-content text)))
               copy))
           panes))
 

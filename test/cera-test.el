@@ -1336,6 +1336,34 @@ that completes on its own."
           (cera-accept))
       (should (equal (cera-read nil "note") "note")))))
 
+(ert-deftest cera-a-pane-stacks-blocks-held-apart-by-their-gaps ()
+  "A pane may be given blocks, each keeping the room it asks for beneath."
+  (let* ((pane (cera-pane :id 'probe :kind 'readonly :bracket nil :prefix nil
+                          :text (list (cons "" 8)
+                                      (cons "first" 3)
+                                      (cons "second" 0)
+                                      (cons "" 8))))
+         (rows (cera--pane-rows (cera--pane-blocks pane) 80))
+         (spacing (mapcar (lambda (row)
+                            (get-text-property 0 'line-spacing (cdr row)))
+                          rows)))
+    (should (equal (mapcar #'car rows) '("" "first" "second" "")))
+    (should (equal spacing '(8 3 nil 8)))
+    ;; A spacer takes no line of its own, only the room under it.
+    (should (equal (get-text-property 0 'line-height (cdr (car rows))) 1))
+    (should-not (get-text-property 0 'line-height (cdr (nth 1 rows))))))
+
+(ert-deftest cera-a-pane-given-one-string-is-one-block-of-it ()
+  (let ((pane (cera-pane :id 'probe :kind 'readonly :bracket nil :prefix nil
+                         :text "one\ntwo")))
+    (should (equal (cera--pane-blocks pane) '(("one\ntwo" . 0))))
+    (should (equal (mapcar #'car (cera--pane-rows (cera--pane-blocks pane) 80))
+                   '("one" "two")))
+    (should (cera--pane-visible-p pane))
+    (should-not (cera--pane-visible-p
+                 (cera-pane :id 'probe :kind 'readonly :bracket nil :prefix nil
+                            :text (list (cons "" 8) (cons "" 8)))))))
+
 (provide 'cera-test)
 (defvar cera-test-suppressed-mode-map
   (let ((map (make-sparse-keymap))
