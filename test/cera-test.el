@@ -1349,9 +1349,11 @@ that completes on its own."
                           rows)))
     (should (equal (mapcar #'car rows) '("" "first" "second" "")))
     (should (equal spacing '(8 3 nil 8)))
-    ;; A spacer takes no line of its own, only the room under it.
-    (should (equal (get-text-property 0 'line-height (cdr (car rows))) 1))
-    (should-not (get-text-property 0 'line-height (cdr (nth 1 rows))))))
+    ;; A block with neither text nor gap is dropped, since the display gives
+    ;; a line its full height or none at all.
+    (should (equal (mapcar #'car (cera--pane-rows
+                                  (list (cons "" 0) (cons "only" 0)) 80))
+                   '("only")))))
 
 (ert-deftest cera-a-pane-given-one-string-is-one-block-of-it ()
   (let ((pane (cera-pane :id 'probe :kind 'readonly :bracket nil :prefix nil

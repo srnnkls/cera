@@ -464,14 +464,15 @@ stack says nothing about stacking."
   "Split BLOCKS into display rows no wider than WIDTH columns.
 The newline ending a block asks for the block\='s gap as room beneath it,
 which is where the display takes the space between blocks from.  A block
-with no text is a spacer: it keeps its gap without a line of its own."
+with no text stands as a blank line, and one with no gap either is
+dropped: the display gives a line its full height or none at all, so
+there is no blank line thinner than the rest."
   (let (rows)
     (dolist (block blocks)
       (let* ((text (car block))
              (gap (or (cdr block) 0))
-             (lines (if (string-empty-p text)
-                        (list (cons "" (propertize "\n" 'line-height 1)))
-                      (cera--text-rows text width))))
+             (lines (cond ((not (string-empty-p text)) (cera--text-rows text width))
+                          ((> gap 0) (list (cons "" "\n"))))))
         (when (and lines (> gap 0))
           (setcdr (car (last lines))
                   (apply #'propertize "\n" 'line-spacing gap
