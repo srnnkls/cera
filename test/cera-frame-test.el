@@ -519,5 +519,144 @@ to show is in the window the field was read over."
         (set-window-configuration layout)
         (kill-buffer shown)))))
 
+(defvar cera-frame-test--focused nil
+  "The frames the keyboard was given to, newest first, while a key was routed.")
+
+(defun cera-frame-test--routed (key command &optional local)
+  "Return what `cera-frame--host-command' makes of KEY running COMMAND in a field.
+COMMAND is bound to KEY globally, and LOCAL, when given, over it in the
+child.  The answer is the command that runs, whether the host window is
+selected once it has, and the frames the keyboard was given to, in the
+order it went to them.  The frame the field stands in is the one the
+test runs on, so what the command reaches is a live frame."
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (let ((cera-input-backend 'frame)
+          (host (selected-window))
+          (parent (current-buffer))
+          (global (current-global-map))
+          (map (make-composed-keymap nil (current-global-map)))
+          ran)
+      (setq cera-frame-test--focused nil)
+      (define-key map key command)
+      (use-global-map map)
+      (unwind-protect
+          (cera-frame-test--reading
+              (lambda ()
+                (let ((field (buffer-local-value 'cera-frame--field parent)))
+                  (with-current-buffer (cera-frame--field-child field)
+                    (when local
+                      (let ((own (make-sparse-keymap)))
+                        (define-key own key local)
+                        (use-local-map (make-composed-keymap own (current-local-map)))))
+                    (let ((this-command (key-binding key)))
+                      (cl-letf (((symbol-function 'this-command-keys-vector)
+                                 (lambda () key))
+                                ((symbol-function 'cera-frame--taken-p) #'ignore)
+                                ((symbol-function 'select-frame-set-input-focus)
+                                 (lambda (frame &rest _)
+                                   (push frame cera-frame-test--focused))))
+                        (should (memq #'cera-frame--host-command pre-command-hook))
+                        (cera-frame--host-command)
+                        (setf (cera-frame--field-frame field) (selected-frame))
+                        (unwind-protect
+                            (setq ran (list this-command
+                                            (and (not (symbolp this-command))
+                                                 (progn (funcall this-command)
+                                                        (selected-window)))))
+                          (setf (cera-frame--field-frame field) nil))))))
+                (cera-accept))
+            (cera-read nil "note"))
+        (use-global-map global))
+      (list (car ran) (and (cadr ran) (eq (cadr ran) host))
+            (reverse cera-frame-test--focused)))))
+
+(ert-deftest cera-frame-runs-a-super-binding-from-the-window-it-is-read-over ()
+  "A global key on a host modifier acts from the host window, as in the buffer."
+  (let* ((ran nil)
+         (command (lambda () (interactive) (setq ran (selected-window))))
+         (routed (cera-frame-test--routed [?\s-j] command)))
+    (should (functionp (car routed)))
+    (should-not (eq (car routed) command))
+    (should (cadr routed))
+    (should (windowp ran))))
+
+(ert-deftest cera-frame-hands-the-host-the-keyboard-when-the-command-reads ()
+  "A host command opening the minibuffer gives the host's frame the keyboard.
+The minibuffer opens on that frame, and the keys typed into it go to
+whichever frame the window system points at; the field takes the
+keyboard back once the command is done."
+  (let* ((during nil)
+         (command (lambda ()
+                    (interactive)
+                    (run-hooks 'minibuffer-setup-hook)
+                    (setq during (reverse cera-frame-test--focused))))
+         (routed (cera-frame-test--routed [?\s-l] command)))
+    (should (equal during (list (selected-frame))))
+    (should (equal (nth 2 routed) (list (selected-frame) (selected-frame))))))
+
+(ert-deftest cera-frame-keeps-the-keyboard-through-a-host-command-that-stays ()
+  "A host command acting on the host window alone never moves the keyboard.
+Each move switches the window system's input method, and a held key
+repeating that crashes the macOS port."
+  (let* ((host (selected-window))
+         (ran nil)
+         (command (lambda () (interactive) (setq ran (selected-window))))
+         (routed (cera-frame-test--routed [?\s-l] command)))
+    (should (eq ran host))
+    (should (cadr routed))
+    (should-not (nth 2 routed))))
+
+(ert-deftest cera-frame-takes-the-keyboard-back-from-a-command-that-quits ()
+  "A host command left by `keyboard-quit' in its minibuffer hands the keyboard back."
+  (let ((command (lambda ()
+                   (interactive)
+                   (run-hooks 'minibuffer-setup-hook)
+                   (signal 'quit nil))))
+    (cera-frame-test--should-quit (cera-frame-test--routed [?\s-l] command))
+    (should (= (length cera-frame-test--focused) 2))))
+
+(ert-deftest cera-frame-gives-the-keyboard-where-a-host-command-went ()
+  "A host command selecting another window leaves the keyboard with it."
+  (let* ((layout (current-window-configuration))
+         (command (lambda () (interactive) (select-window (split-window))))
+         (routed (unwind-protect (cera-frame-test--routed [?\s-j] command)
+                   (set-window-configuration layout))))
+    (should-not (cadr routed))
+    (should (equal (nth 2 routed) (list (selected-frame))))))
+
+(ert-deftest cera-frame-keeps-writing-and-local-keys-in-the-field ()
+  "Text-writing, unmodified and locally bound keys stay with the field."
+  (should (eq (car (cera-frame-test--routed [?\s-y] #'yank)) #'yank))
+  (should (eq (car (cera-frame-test--routed [?\C-x ?9] #'ignore)) #'ignore))
+  (should (eq (car (cera-frame-test--routed [?\s-j] #'ignore #'beginning-of-line))
+              #'beginning-of-line)))
+
+(ert-deftest cera-frame-takes-the-keyboard-back-when-its-window-is-selected ()
+  "Selecting the window a field is read over hands the keyboard to the field."
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (let ((cera-input-backend 'frame)
+          focused)
+      (cera-frame-test--reading
+          (lambda ()
+            (should (memq #'cera-frame--return window-selection-change-functions))
+            (let ((field (car cera-frame--fields)))
+              (setf (cera-frame--field-frame field) 'child-frame)
+              (cl-letf (((symbol-function 'frame-live-p) (lambda (frame) (eq frame 'child-frame)))
+                        ((symbol-function 'frame-root-window) (lambda (_) (selected-window)))
+                        ((symbol-function 'select-frame-set-input-focus)
+                         (lambda (frame) (setq focused frame))))
+                (cl-letf (((symbol-function 'run-at-time)
+                           (lambda (_time _repeat function &rest args)
+                             (apply function args))))
+                  (save-current-buffer (cera-frame--return)))))
+            (cera-accept))
+        (cera-read nil "note"))
+      (should (eq focused 'child-frame))
+      (should-not (memq #'cera-frame--return window-selection-change-functions)))))
+
 (provide 'cera-frame-test)
 ;;; cera-frame-test.el ends here

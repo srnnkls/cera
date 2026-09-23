@@ -25,6 +25,7 @@
 ;;; Code:
 
 (require 'cera)
+(require 'delsel)
 
 (defcustom cera-frame-scroll-parent nil
   "Whether \"the other window\" from inside the field is the one it is read over.
@@ -33,6 +34,19 @@ whichever window Emacs reaches next — a neighbour of the frame, or one
 on another visible frame.  Non-nil points them at the buffer the field
 was opened over instead."
   :type 'boolean
+  :group 'cera)
+
+(defcustom cera-frame-host-modifiers '(super)
+  "Modifiers whose global bindings run from the window the field is read over.
+The field holds a frame of one window, so a global command that moves
+between windows, switches workspaces or reads the buffer around it
+would see only that frame.  A key carrying one of these modifiers runs
+its global binding from the window the field is read over instead, as
+it would with the field written in the buffer, and the keyboard comes
+back to the field once that window is selected again.  A binding that
+writes text, as `delete-selection-mode' marks one, still writes into
+the field."
+  :type '(repeat (choice (const super) (const hyper) (const alt)))
   :group 'cera)
 
 (defcustom cera-frame-parameters '((persp-ignore-wconf . t))
@@ -140,6 +154,50 @@ visible frame — rather than the buffer the field was opened over."
               ((window-live-p window)))
     window))
 
+(defun cera-frame--in-host (field window command)
+  "Run COMMAND from WINDOW, the one FIELD is read over, and come back.
+The keyboard stays with the field's frame unless COMMAND needs it: a
+minibuffer COMMAND opens is on the host window's frame, where the keys
+typed into it would otherwise never arrive, and a window COMMAND leaves
+selected keeps it.  Moving the keyboard switches the window system's
+input method, which the macOS port crashes in when a held key repeats
+it, so a command acting on the host alone never moves it."
+  (let ((frame (cera-frame--field-frame field))
+        (focused nil))
+    (select-frame (window-frame window) t)
+    (select-window window)
+    (unwind-protect
+        (minibuffer-with-setup-hook
+            (lambda ()
+              (setq focused t)
+              (select-frame-set-input-focus (window-frame window)))
+          (call-interactively command))
+      (cond ((not (eq (selected-window) window))
+             (select-frame-set-input-focus (selected-frame)))
+            ((frame-live-p frame)
+             (if focused
+                 (select-frame-set-input-focus frame)
+               (select-frame frame t))
+             (select-window (frame-root-window frame)))))))
+
+(defun cera-frame--host-command ()
+  "Run a global binding on `cera-frame-host-modifiers' from the host window."
+  (when-let* ((field cera-frame--field)
+              (window (cera-frame--field-window field))
+              ((window-live-p window))
+              (keys (this-command-keys-vector))
+              ((> (length keys) 0))
+              ((seq-intersection (event-modifiers (aref keys 0))
+                                 cera-frame-host-modifiers))
+              (command this-command)
+              ((eq command (lookup-key (current-global-map) keys)))
+              ((not (and (symbolp command) (get command 'delete-selection)))))
+    (setq this-command
+          (lambda ()
+            (interactive)
+            (setq this-command command)
+            (cera-frame--in-host field window command)))))
+
 (defun cera-frame--child (field)
   "Return a fresh buffer for FIELD's input, set up as the parent has it."
   (let ((parent (cera-frame--field-parent field))
@@ -148,6 +206,7 @@ visible frame — rather than the buffer the field was opened over."
       (text-mode)
       (dolist (symbol cera-frame--copied-locals)
         (set (make-local-variable symbol) (buffer-local-value symbol parent)))
+      (add-hook 'pre-command-hook #'cera-frame--host-command nil t)
       (setq-local cera-frame--field field
                   cera--origin-buffer parent
                   cera-space-below 0
@@ -515,6 +574,27 @@ window the field was read over, where the command meant it to go."
               (unless (eq taken child)
                 (set-window-buffer window taken)))))))))
 
+(defun cera-frame--return (&rest _)
+  "Give the keyboard back to the field whose window was selected again.
+A key on `cera-frame-host-modifiers' left the field for the window it is
+read over; the field is written there, so selecting that window is
+selecting the field.  The frame is raised from a timer: raising it while
+redisplay runs this hook crashes the macOS port mid input-method switch."
+  (run-at-time 0 nil #'cera-frame--focus-field (selected-window)))
+
+(defun cera-frame--focus-field (window)
+  "Give the keyboard to the field read over WINDOW, if it is still selected."
+  (when-let* (((eq window (selected-window)))
+              (field (seq-find (lambda (field)
+                                 (eq (cera-frame--field-window field) window))
+                               cera-frame--fields))
+              (frame (cera-frame--field-frame field))
+              ((frame-live-p frame))
+              (child (cera-frame--field-child field))
+              ((buffer-local-value 'cera--active child)))
+    (select-frame-set-input-focus frame)
+    (select-window (frame-root-window frame))))
+
 (defconst cera-frame--parent-locals
   '(cera--active cera--field-buffer cera-frame--field
                  cursor-in-non-selected-windows global-hl-line-mode
@@ -528,7 +608,8 @@ window the field was read over, where the command meant it to go."
   (setf (cera-frame--field-bindings field)
         (cera--remember-locals cera-frame--parent-locals))
   (unless cera-frame--fields
-    (add-hook 'window-configuration-change-hook #'cera-frame--reclaim))
+    (add-hook 'window-configuration-change-hook #'cera-frame--reclaim)
+    (add-hook 'window-selection-change-functions #'cera-frame--return))
   (push field cera-frame--fields)
   (setq-local cera--active (cera-frame--field-session field)
               cera--field-buffer (cera-frame--field-child field)
@@ -561,7 +642,8 @@ window the field was read over, where the command meant it to go."
         (session (cera-frame--field-session field)))
     (setq cera-frame--fields (delq field cera-frame--fields))
     (unless cera-frame--fields
-      (remove-hook 'window-configuration-change-hook #'cera-frame--reclaim))
+      (remove-hook 'window-configuration-change-hook #'cera-frame--reclaim)
+      (remove-hook 'window-selection-change-functions #'cera-frame--return))
     (when (frame-live-p frame) (delete-frame frame t))
     (when (buffer-live-p child) (kill-buffer child))
     (when (buffer-live-p parent)
