@@ -427,6 +427,8 @@ as the same surface on a light theme and on a dark one."
                     (+ (cera--indent) (cera--pane-width pane))
                     (- (cera--pane-width pane) cera-bracket-width)))))))))
 
+(defvar cera-input-fontifier)
+
 (defun cera--draw-range (session pane begin end &optional aligned)
   "Decorate PANE's BEGIN to END in SESSION, following ALIGNED text.
 A fixed number of overlays per window covers any length of input."
@@ -1089,6 +1091,9 @@ held off there either way, so what it holds is never read as code."
 
 (defvar cera--markdown-buffer nil
   "The hidden buffer a field\='s text is coloured as Markdown in.")
+
+(declare-function markdown-mode "ext:markdown-mode" ())
+(defvar markdown-hide-markup)
 
 (defun cera-fontify-input-as-markdown (begin end)
   "Colour the field between BEGIN and END as Markdown.
