@@ -26,10 +26,32 @@
 
 (require 'cera)
 
-(defconst cera-frame--fringe 8
-  "Pixels of fringe kept at the right of the child frame.
-A window without one draws a continuation mark in its last column, which
-the field's rows are then one column short of the buffer's.")
+(defcustom cera-frame-scroll-parent nil
+  "Whether \"the other window\" from inside the field is the one it is read over.
+The frame holds one window of its own, so the scroll commands take
+whichever window Emacs reaches next — a neighbour of the frame, or one
+on another visible frame.  Non-nil points them at the buffer the field
+was opened over instead."
+  :type 'boolean
+  :group 'cera)
+
+(defcustom cera-frame-parameters '((persp-ignore-wconf . t))
+  "Extra parameters put on the child frame the input is written in.
+They tell the workspace managers that keep a layout per frame to leave
+it alone: one restoring a saved layout into whatever frame is selected
+reaches the child frame while the field holds the keyboard, and lays
+the workspace's buffers over the input.  The default carries the flag
+`persp-mode' reads; add what another manager reads beside it."
+  :type '(alist :key-type symbol :value-type sexp)
+  :group 'cera)
+
+(defun cera-frame--fringes (window)
+  "Return the pixels of WINDOW's left and right fringes, as a list.
+The child frame takes the same, so that its text area is the window's:
+a window without a right fringe gives its last column to the
+continuation mark, which moves the centre a line is aligned on."
+  (let ((fringes (window-fringes window)))
+    (list (or (nth 0 fringes) 0) (or (nth 1 fringes) 0))))
 
 (cl-defstruct (cera-frame--field (:constructor cera-frame--make-field))
   "A field read over PARENT, shown in WINDOW, written in CHILD.
@@ -43,7 +65,7 @@ SOURCE-PREFIX the one they sit behind in PARENT, BINDINGS what PARENT
 had before the field borrowed its settings, and PLACED what the
 frame's position was last worked out from."
   parent window child frame session input holder anchor below rows
-  aligned source-prefix bindings placed)
+  aligned source-prefix bindings placed under under-rows)
 
 (defvar-local cera-frame--field nil
   "The field written in a child frame over this buffer, or in it.")
@@ -107,6 +129,17 @@ of its own instead."
       (let ((display-buffer-overriding-action nil))
         (display-buffer buffer alist)))))
 
+(defun cera-frame--scroll-window ()
+  "Return the window the field written here is read over, or nil.
+The frame holds one window of its own, so a command scrolling \"the
+other window\" from inside the field would otherwise take whichever
+window Emacs reaches next — a neighbour of the frame, or one on another
+visible frame — rather than the buffer the field was opened over."
+  (when-let* ((field cera-frame--field)
+              (window (cera-frame--field-window field))
+              ((window-live-p window)))
+    window))
+
 (defun cera-frame--child (field)
   "Return a fresh buffer for FIELD's input, set up as the parent has it."
   (let ((parent (cera-frame--field-parent field))
@@ -120,6 +153,8 @@ of its own instead."
                   cera-space-below 0
                   display-buffer-overriding-action
                   '(cera-frame--display-through-parent)
+                  other-window-scroll-default
+                  (and cera-frame-scroll-parent #'cera-frame--scroll-window)
                   mode-line-format nil
                   header-line-format nil
                   tab-line-format nil
@@ -140,6 +175,40 @@ of its own instead."
         (cera--shaded background)
       (face-background 'cera-body nil t))))
 
+(defun cera-frame--parameters (parent background &optional fringes)
+  "Return the parameters of a child frame over PARENT, drawn on BACKGROUND.
+FRINGES are the left and right fringe pixels, none by default.
+`cera-frame-parameters' comes first, where a parameter it names is the
+one the frame is made with."
+  (append
+   cera-frame-parameters
+   `((parent-frame . ,parent)
+     (font . ,(frame-parameter parent 'font))
+     (line-spacing . ,(frame-parameter parent 'line-spacing))
+     (background-color . ,background)
+     (minibuffer . nil)
+     (undecorated . t)
+     (visibility . nil)
+     (width . 1) (height . 1)
+     (min-width . 0) (min-height . 0)
+     (border-width . 0)
+     (internal-border-width . 0)
+     (child-frame-border-width . 0)
+     (left-fringe . ,(or (nth 0 fringes) 0))
+     (right-fringe . ,(or (nth 1 fringes) 0))
+     (vertical-scroll-bars . nil)
+     (horizontal-scroll-bars . nil)
+     (menu-bar-lines . 0)
+     (tool-bar-lines . 0)
+     (tab-bar-lines . 0)
+     (no-special-glyphs . t)
+     (unsplittable . t)
+     (no-other-frame . t)
+     (desktop-dont-save . t)
+     (cursor-type . t)
+     (no-accept-focus . nil)
+     (no-focus-on-map . nil))))
+
 (defun cera-frame--make-frame (field)
   "Create the child frame FIELD's input is written in, still invisible.
 The frame hooks are held off: a workspace manager would take the frame
@@ -149,38 +218,13 @@ for a new workspace and put its own buffer in it."
          (background (cera-frame--background))
          (before-make-frame-hook nil)
          (after-make-frame-functions nil)
-         (frame (make-frame
-                 `((parent-frame . ,parent)
-                   (font . ,(frame-parameter parent 'font))
-                   (line-spacing . ,(frame-parameter parent 'line-spacing))
-                   (background-color . ,background)
-                   (minibuffer . nil)
-                   (undecorated . t)
-                   (visibility . nil)
-                   (width . 1) (height . 1)
-                   (min-width . 0) (min-height . 0)
-                   (border-width . 0)
-                   (internal-border-width . 0)
-                   (child-frame-border-width . 0)
-                   (left-fringe . 0)
-                   (right-fringe . ,cera-frame--fringe)
-                   (vertical-scroll-bars . nil)
-                   (horizontal-scroll-bars . nil)
-                   (menu-bar-lines . 0)
-                   (tool-bar-lines . 0)
-                   (tab-bar-lines . 0)
-                   (no-special-glyphs . t)
-                   (unsplittable . t)
-                   (no-other-frame . t)
-                   (desktop-dont-save . t)
-                   (cursor-type . t)
-                   (no-accept-focus . nil)
-                   (no-focus-on-map . nil)))))
+         (frame (make-frame (cera-frame--parameters
+                             parent background (cera-frame--fringes window)))))
     (when background
       (set-face-background 'fringe background frame))
     (let ((view (frame-root-window frame)))
       (set-window-buffer view (cera-frame--field-child field))
-      (set-window-dedicated-p view t)
+      (set-window-dedicated-p view 'cera)
       (set-window-parameter view 'mode-line-format 'none)
       (set-window-parameter view 'header-line-format 'none))
     frame))
@@ -204,38 +248,80 @@ since it comes back short of what is scrolled away."
   "Return ROWS bracketed rows to hold open under FIELD's source.
 They are drawn as the in-buffer reader draws the input's rows, with its
 brackets, so a window the frame is not over still shows the field.
-They follow the newline closing the source line, or, where the buffer
-ends there, open a row after its last character, with `cera-space-below'
-under the last of them."
+They are put before the newline closing the source line, or where the
+buffer ends there after its last character, and open a row of their
+own: a line the rows began would draw its prefix in front of them.
+The panes under the input come after them, on the buffer's own ground
+rather than the field's.  The newline or the end of the buffer closes
+the last row, and `cera-space-below' is kept under it."
   (let* ((pane (cera-frame--field-input field))
          (aligned (cera-frame--field-source-prefix field))
          (below (cera-frame--field-below field))
-         (space (with-current-buffer (cera-frame--field-parent field)
-                  (and (> cera-space-below 0) cera-space-below)))
          (text (mapconcat (lambda (index)
                             (cera--pane-decoration
                              pane (cera--pane-endpoint pane (zerop index)
                                                        (= (1+ index) rows))
                              aligned))
-                          (number-sequence 0 (1- rows)) "\n")))
+                          (number-sequence 0 (1- rows)) "\n"))
+         (under (cera-frame--under-text field)))
+    (setf (cera-frame--field-under-rows field)
+          (if under (cl-count ?\n under) 0))
     (propertize
-     (if below
-         (concat (unless (with-current-buffer (cera-frame--field-parent field)
-                           (save-excursion
-                             (goto-char (cera-frame--field-anchor field))
-                             (bolp)))
-                   "\n")
-                 text)
-       (concat text (propertize "\n" 'line-spacing space)))
+     (concat (unless (and below
+                          (with-current-buffer (cera-frame--field-parent field)
+                            (save-excursion
+                              (goto-char (cera-frame--field-anchor field))
+                              (bolp))))
+               "\n")
+             text
+             (and under (concat "\n" (string-remove-suffix "\n" under))))
      'line-prefix "" 'wrap-prefix "")))
 
-(defun cera-frame--hold-rows (field rows)
-  "Hold ROWS rows open under FIELD's source, redrawn when the count is new."
-  (unless (eql rows (cera-frame--field-rows field))
+(defun cera-frame--under-text (field)
+  "Return the panes under FIELD's rows as the parent draws them, or nil."
+  (when-let* ((window (cera-frame--field-window field))
+              ((window-live-p window))
+              (panes (cl-remove-if-not #'cera--pane-visible-p
+                                       (cera-frame--field-under field))))
+    (with-current-buffer (cera-frame--field-parent field)
+      (let ((cera--aligned (cera-frame--field-source-prefix field)))
+        (mapconcat (lambda (pane)
+                     (cera--virtual-text pane (window-body-width window)
+                                         cera--aligned))
+                   panes "")))))
+
+(defun cera-frame--update-under (id text)
+  "Put TEXT in the pane ID under the rows of the field over this buffer.
+Return non-nil when the field holds a pane of that name."
+  (when-let* ((field cera-frame--field)
+              (pane (cl-find id (cera-frame--field-under field)
+                             :key #'cera-pane-id :test #'equal)))
+    (setf (cera-pane-text pane) (cera--copy-content text))
+    (cera-frame--hold-rows field (cera-frame--field-rows field) t)
+    t))
+
+(defun cera-frame--hold-rows (field rows &optional force)
+  "Hold ROWS rows open under FIELD's source, redrawn when the count is new.
+FORCE redraws them with the count as it was, for a pane under them."
+  (when (or force (not (eql rows (cera-frame--field-rows field))))
     (setf (cera-frame--field-rows field) rows)
-    (overlay-put (cera-frame--field-holder field)
-                 (if (cera-frame--field-below field) 'before-string 'after-string)
-                 (cera-frame--rows-text field rows))))
+    (let ((holder (cera-frame--field-holder field)))
+      (overlay-put holder 'before-string (cera-frame--rows-text field rows))
+      (overlay-put holder 'line-spacing (cera-frame--space-below field)))))
+
+(defun cera-frame--space-below (field)
+  "Return the pixels kept under FIELD's input rows, or nil for none."
+  (with-current-buffer (cera-frame--field-parent field)
+    (and (> cera-space-below 0) cera-space-below)))
+
+(defun cera-frame--row-top (window offset)
+  "Return the frame coordinate of the row OFFSET pixels down WINDOW.
+`pos-visible-in-window-p' counts from the top of the window, a header
+line and a tab line included, while `window-inside-pixel-edges' counts
+from the top of the frame with those left out.  Adding the two counts a
+header line twice and lays the frame a row below the rows held for it,
+so the window's own top is what the offset is taken from."
+  (+ (nth 1 (window-pixel-edges window)) offset))
 
 (defun cera-frame--placement-key (field)
   "Return what FIELD's frame position depends on, or nil off the window.
@@ -249,16 +335,16 @@ after the field opened moves the source line down."
                (window-inside-pixel-edges window)
                (marker-position (cera-frame--field-anchor field))
                (cera-frame--field-rows field)
-               (cera--session-static-overlays (cera-frame--field-session field))))))
+               (cera--session-static-overlays (cera-frame--field-session field))
+               (cera-frame--field-under-rows field)))))
 
 (defun cera-frame--place (field &optional force)
   "Lay FIELD's frame over the rows held open for it, or hide it off-screen.
 Nothing is worked out again while what the position depends on is as
-it was, unless FORCE.  The rows follow the newline closing the source
-line, whose row is where the frame is counted on from.  Where the
-buffer ends at the anchor the rows are drawn before it, so the row of
-the character before the anchor is found instead; an empty buffer
-shows the anchor after them."
+it was, unless FORCE.  The rows are drawn before the anchor, after any
+pane hung there too, and followed by the panes under them, so the row
+the anchor closes is the last of those: the frame is counted back from
+it."
   (let ((key (cera-frame--placement-key field))
         (frame (cera-frame--field-frame field)))
     (cond
@@ -272,19 +358,16 @@ shows the anchor after them."
              (parent (cera-frame--field-parent field))
              (anchor (nth 3 key))
              (rows (or (nth 4 key) 1))
-             (below (cera-frame--field-below field))
-             (trailing (and below (= anchor (with-current-buffer parent (point-min)))))
+             (under (or (nth 6 key) 0))
              (visible (with-current-buffer parent
-                        (pos-visible-in-window-p
-                         (if (and below (not trailing)) (1- anchor) anchor)
-                         window t))))
+                        (pos-visible-in-window-p anchor window t))))
         (if (not (consp visible))
             (when (frame-visible-p frame) (make-frame-invisible frame))
           (let* ((edges (nth 2 key))
                  (line (window-default-line-height window))
-                 (x (nth 0 edges))
-                 (y (+ (nth 1 edges) (nth 1 visible)
-                       (if trailing (- (* line (1- rows))) line))))
+                 (x (- (nth 0 edges) (car (cera-frame--fringes window))))
+                 (y (- (cera-frame--row-top window (nth 1 visible))
+                       (* line (+ (1- rows) under)))))
             (unless (equal (frame-position frame) (cons x y))
               (set-frame-position frame x y))
             (unless (frame-visible-p frame) (make-frame-visible frame)))))))))
@@ -298,7 +381,8 @@ shows the anchor after them."
                (buffer-live-p child)
                (buffer-local-value 'cera--active child))
       (let* ((edges (window-inside-pixel-edges window))
-             (width (+ (- (nth 2 edges) (nth 0 edges)) cera-frame--fringe))
+             (width (+ (- (nth 2 edges) (nth 0 edges))
+                       (apply #'+ (cera-frame--fringes window))))
              (line (window-default-line-height window)))
         (unless (= (frame-pixel-width frame) width)
           (set-frame-size frame width (frame-pixel-height frame) t))
@@ -391,23 +475,68 @@ in-buffer reader has just put its field."
     (with-current-buffer child
       (when cera--active (cera--release)))))
 
+(defvar cera-frame--fields nil
+  "The fields being written in a child frame now, newest first.")
+
+(defun cera-frame--taken-p (field)
+  "Return the buffer laid over FIELD's input in its own frame, or nil.
+The frame holds one window, dedicated to the buffer the input is
+written in; a command reaching the frame while it has the keyboard —
+a workspace manager restoring a layout into whatever frame is
+selected — leaves another buffer there instead."
+  (when-let* ((frame (cera-frame--field-frame field))
+              ((frame-live-p frame))
+              (child (cera-frame--field-child field))
+              ((buffer-live-p child))
+              ((not (get-buffer-window child frame)))
+              (view (frame-selected-window frame)))
+    (window-buffer view)))
+
+(defvar cera-frame--reclaiming nil
+  "Whether a field is being given back, the hook held off while it is.")
+
+(defun cera-frame--reclaim ()
+  "Give back a field whose frame another command has put its own buffer in.
+The field is released as it is for a command that takes the buffer
+whole: what was written goes on the kill ring and the reader returns
+once the command does.  The buffer put in the frame is shown in the
+window the field was read over, where the command meant it to go."
+  (unless cera-frame--reclaiming
+    (let ((cera-frame--reclaiming t))
+      (dolist (field (copy-sequence cera-frame--fields))
+        (when-let* ((taken (cera-frame--taken-p field)))
+          (let ((child (cera-frame--field-child field))
+                (window (cera-frame--field-window field)))
+            (with-current-buffer child
+              (when cera--active (cera--release)))
+            (when (window-live-p window)
+              (select-frame-set-input-focus (window-frame window))
+              (select-window window)
+              (unless (eq taken child)
+                (set-window-buffer window taken)))))))))
+
 (defconst cera-frame--parent-locals
   '(cera--active cera--field-buffer cera-frame--field
                  cursor-in-non-selected-windows global-hl-line-mode
                  kill-buffer-hook pre-redisplay-functions window-scroll-functions
-                 window-size-change-functions window-configuration-change-hook)
+                 window-size-change-functions window-configuration-change-hook
+                 cera-update-pane-functions)
   "Settings borrowed in the buffer a frame field is read for.")
 
 (defun cera-frame--open (field)
   "Draw FIELD's panes in its parent and hold the parent's settings for it."
   (setf (cera-frame--field-bindings field)
         (cera--remember-locals cera-frame--parent-locals))
+  (unless cera-frame--fields
+    (add-hook 'window-configuration-change-hook #'cera-frame--reclaim))
+  (push field cera-frame--fields)
   (setq-local cera--active (cera-frame--field-session field)
               cera--field-buffer (cera-frame--field-child field)
               cera-frame--field field
               cursor-in-non-selected-windows nil)
   (cera--hold-off-hl-line (cera-frame--field-session field))
   (add-hook 'kill-buffer-hook #'cera-frame--abandon -100 t)
+  (add-hook 'cera-update-pane-functions #'cera-frame--update-under nil t)
   (add-hook 'pre-redisplay-functions #'cera-frame--follow nil t)
   (add-hook 'window-scroll-functions #'cera-frame--scrolled nil t)
   (add-hook 'window-size-change-functions #'cera--resize nil t)
@@ -418,7 +547,9 @@ in-buffer reader has just put its field."
                                    anchor
                                  (1+ anchor))
                         nil t nil))
-    (overlay-put (cera-frame--field-holder field) 'priority 1001))
+    ;; Above the panes' own, so that where both hang off the end of the
+    ;; buffer the rows come after them.
+    (overlay-put (cera-frame--field-holder field) 'priority 1002))
   (cera--draw-static (cera-frame--field-session field)))
 
 (defun cera-frame--close (field)
@@ -428,6 +559,9 @@ in-buffer reader has just put its field."
         (parent (cera-frame--field-parent field))
         (window (cera-frame--field-window field))
         (session (cera-frame--field-session field)))
+    (setq cera-frame--fields (delq field cera-frame--fields))
+    (unless cera-frame--fields
+      (remove-hook 'window-configuration-change-hook #'cera-frame--reclaim))
     (when (frame-live-p frame) (delete-frame frame t))
     (when (buffer-live-p child) (kill-buffer child))
     (when (buffer-live-p parent)
@@ -447,23 +581,30 @@ in-buffer reader has just put its field."
 (defun cera-frame-read-stack (panes table &optional keymap)
   "Read the input of PANES in a child frame over the buffer, completing on TABLE.
 The panes are as `cera-read-stack' describes them, and KEYMAP
-supplements the input bindings the same way.  No pane may follow the
-input.  The buffer gets no line put into it: the bounded panes are
-bracketed where they are, the rows the input takes are held open below
-them, and the input is written in a frame laid over those rows.  Where
-no frame can be shown the field is read in the buffer instead."
+supplements the input bindings the same way.  The buffer gets no line
+put into it: the bounded panes are bracketed where they are, the rows
+the input takes are held open below them, and the input is written in a
+frame laid over those rows.  Supplied panes following the input up to
+the next bounded one are drawn under the rows, outside the frame; the
+rest stay where the buffer has them.  Where no frame can be shown the
+field is read in the buffer instead."
   (if (not (cera-frame--available-p))
       (cera-read-stack-in-buffer panes table keymap)
     (when cera--active (user-error "A field is already open"))
     (setq panes (cera--validate-panes panes))
+    ;; A buffer that redraws itself while the field is open moves the lines
+    ;; the bounded panes bracket, and the brackets are redrawn from these.
+    (dolist (pane panes)
+      (when-let* ((range (cera-pane-bounds pane)))
+        (setf (cera-pane-bounds pane)
+              (cons (copy-marker (car range)) (copy-marker (cdr range))))))
     (let* ((input (cl-find 'input panes :key #'cera-pane-kind))
-           (anchor (progn
-                     (when (cdr (memq input panes))
-                       (user-error "A frame field takes no panes below its input"))
-                     (cera-frame--anchor panes input)))
+           (under (cl-loop for pane in (cdr (memq input panes))
+                           until (cera-pane-bounds pane) collect pane))
+           (anchor (cera-frame--anchor panes input))
            (field (cera-frame--make-field
                    :parent (current-buffer) :window (cera-frame--window)
-                   :input input
+                   :input input :under under
                    :anchor (copy-marker (car anchor)) :below (cdr anchor)
                    :source-prefix (cera-frame--source-prefix panes input)
                    :aligned (concat (cera--line-number-pad)
@@ -471,7 +612,8 @@ no frame can be shown the field is read in the buffer instead."
       (setf (cera-frame--field-session field)
             (cera--make-session
              :buffer (current-buffer) :input input
-             :panes (remq input panes)
+             :aligned (cera-frame--source-prefix panes input)
+             :panes (cl-remove-if (lambda (pane) (memq pane under)) panes)
              :tail (copy-marker (car anchor))))
       (save-window-excursion
         (unwind-protect
@@ -484,7 +626,11 @@ no frame can be shown the field is read in the buffer instead."
                              cera-session-start-hook)))
                   (cera-read-stack-in-buffer (list input) table keymap))))
           (cera-frame--close field)
-          (set-marker (cera-frame--field-anchor field) nil))))))
+          (set-marker (cera-frame--field-anchor field) nil)
+          (dolist (pane panes)
+            (when-let* ((range (cera-pane-bounds pane)))
+              (set-marker (car range) nil)
+              (set-marker (cdr range) nil))))))))
 
 (provide 'cera-frame)
 ;;; cera-frame.el ends here

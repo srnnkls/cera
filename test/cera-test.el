@@ -1380,6 +1380,27 @@ that completes on its own."
     (should-not (cera-pane-wrap (cera-pane :id 'probe :kind 'readonly
                                            :text "" :wrap nil)))))
 
+(ert-deftest cera-a-pane-may-start-where-the-input-s-text-does ()
+  "An unbracketed pane aligned to the input is held off past its bracket and prefix."
+  (let ((cera-indent 0) (cera-input-prefix-width 2))
+    (dolist (case '(("X" . 6) (nil . 2)))
+      (let* ((cera-input-prefix (car case))
+             (shown (cera--virtual-text
+                     (cera-pane :id 'status :kind 'readonly :text "model"
+                                :bracket nil :align 'input)
+                     40))
+             (lead (substring shown 0 (string-search "model" shown))))
+        (should (equal (get-text-property 0 'display lead)
+                       `(space :align-to ,(cdr case))))
+        ;; Behind a prefix of the field's own, plain columns are left.
+        (should (equal (substring-no-properties
+                        (cera--virtual-text
+                         (cera-pane :id 'status :kind 'readonly :text "model"
+                                    :bracket nil :align 'input)
+                         40 "> ")
+                        0 (+ 2 (cdr case)))
+                       (concat "> " (make-string (cdr case) ?\s))))))))
+
 (ert-deftest cera-the-panes-hand-their-last-row-to-the-line-they-stand-on ()
   "Ending the panes in a newline of their own leaves a blank line behind."
   (with-temp-buffer
@@ -1397,6 +1418,21 @@ that completes on its own."
       ;; line they stand on is not one either.
       (should-not (cera--closing-newline "\npane" origin))
       (should-not (cera--closing-newline "\npane\n" (point-min))))))
+
+(ert-deftest cera-field-open-p-answers-for-the-buffer-the-field-is-read-for ()
+  "A buffer rewriting itself asks this before erasing the field's lines."
+  (with-temp-buffer
+    (insert "alpha\n")
+    (let ((buffer (current-buffer)))
+      (should-not (cera-field-open-p))
+      (cera-test--reading
+          (lambda ()
+            (should (cera-field-open-p))
+            (should (cera-field-open-p buffer))
+            (with-temp-buffer (should-not (cera-field-open-p)))
+            (cera-accept))
+        (cera-read nil "note"))
+      (should-not (cera-field-open-p)))))
 
 (provide 'cera-test)
 (defvar cera-test-suppressed-mode-map

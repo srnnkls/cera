@@ -80,14 +80,18 @@ buffer's text while the field was open."
       (cera-frame-test--reading
           (lambda ()
             (setq held (with-current-buffer buffer
-                         (cl-some (lambda (overlay)
-                                    (or (overlay-get overlay 'after-string)
-                                        (overlay-get overlay 'before-string)))
-                                  (overlays-in (point-min) (point-max)))))
+                         (cl-find-if (lambda (overlay)
+                                       (overlay-get overlay 'before-string))
+                                     (overlays-in (point-min) (point-max)))))
+            (setq held (list (overlay-start held)
+                             (overlay-get held 'before-string)
+                             (overlay-get held 'line-spacing)))
             (cera-accept))
         (cera-read nil "note" (cons 1 6)))
-      (should (string-match-p "╰ " held))
-      (should (= (get-text-property (1- (length held)) 'line-spacing held) 8)))))
+      ;; Before the newline closing the source line, which closes the last row.
+      (should (= (nth 0 held) 6))
+      (should (string-match-p "\\`\n.*╰ \\'" (nth 1 held)))
+      (should (= (nth 2 held) 8)))))
 
 (ert-deftest cera-frame-puts-the-buffer-back-on-accept-and-cancel ()
   "The buffer's overlays, settings and child buffer go with the field."
@@ -215,7 +219,7 @@ line; the rows come after its newline, the pane before it."
             (cera-accept))
         (cera-read nil "note"))
       (should (member '(1 1 before nil) drawn))
-      (should (member '(1 2 nil after) drawn)))))
+      (should (member '(1 2 before nil) drawn)))))
 
 (ert-deftest cera-frame-takes-any-window-showing-the-buffer ()
   "A buffer shown in a window other than the selected one still gets a frame."
@@ -288,20 +292,232 @@ line; the rows come after its newline, the pane before it."
         (should (equal (cera-read nil "note" (cons 1 6)) "note")))
       (should (equal text "alpha\nnote\nnext\n")))))
 
-(ert-deftest cera-frame-takes-no-panes-below-the-input ()
-  "A pane after the input has nowhere to go under a frame."
+;; A supplied pane under the input is drawn in the buffer under the rows
+;; the frame covers, on the buffer's ground; a bounded one stays on its lines.
+(ert-deftest cera-frame-draws-the-panes-under-the-input-below-its-rows ()
+  "Panes follow the input in any order, drawn below the rows the frame is laid over."
   (with-temp-buffer
-    (insert "alpha\n")
-    (cera-frame-test--reading (lambda () (cera-accept))
-      (should-error
-       (cera-frame-read-stack
-        (list (cera-pane :id 'source :kind 'readonly :bounds (cons 1 6))
-              (cera-pane :id 'input :kind 'input :text "")
-              (cera-pane :id 'after :kind 'readonly :text "below"))
-        nil)
-       :type 'user-error))
+    (insert "alpha\nbeta\ngamma\n")
+    (let ((buffer (current-buffer))
+          (shown (window-buffer (selected-window)))
+          child-ids parent-ids held bracketed)
+      (set-window-buffer (selected-window) buffer)
+      (cera-frame-test--reading
+          (lambda ()
+            (let* ((field (buffer-local-value 'cera-frame--field buffer))
+                   (child (cera-frame--field-child field)))
+              (with-current-buffer child
+                (setq child-ids (mapcar #'cera-pane-id
+                                        (cera--session-panes cera--active))))
+              (with-current-buffer buffer
+                (setq parent-ids (mapcar #'cera-pane-id
+                                         (cera--session-panes cera--active)))
+                (cera-update-pane 'under "shown under")
+                (setq held (overlay-get (cera-frame--field-holder field) 'before-string)
+                      bracketed (get-char-property 13 'line-prefix))))
+            (cera-accept))
+        (should
+         (equal (cera-frame-read-stack
+                 (list (cera-pane :id 'source :kind 'readonly :bounds (cons 1 6))
+                       (cera-pane :id 'input :kind 'input :text "note")
+                       (cera-pane :id 'under :kind 'readonly :text ""
+                                  :bracket nil)
+                       (cera-pane :id 'later :kind 'readonly :bounds (cons 13 18)))
+                 nil)
+                "note")))
+      (set-window-buffer (selected-window) shown)
+      (should (equal child-ids '(input)))
+      (should (equal parent-ids '(source input later)))
+      (should (string-match-p "╰ \n\\(.\\|\n\\)*shown under\\'" held))
+      (should-not (get-text-property (string-search "shown" held) 'face held))
+      (should bracketed))
     (should-not cera--active)
     (should-not (overlays-in (point-min) (point-max)))))
+
+;; An empty buffer hangs the panes above the input and the rows under them
+;; off the same position, where only priority puts one before the other.
+(ert-deftest cera-frame-hangs-its-rows-after-the-panes-of-an-empty-buffer ()
+  "The rows, and the panes under them, come after the panes above the input."
+  (with-temp-buffer
+    (let ((buffer (current-buffer))
+          (shown (window-buffer (selected-window)))
+          holder panes under-rows)
+      (set-window-buffer (selected-window) buffer)
+      (cera-frame-test--reading
+          (lambda ()
+            (with-current-buffer buffer
+              (let ((field cera-frame--field))
+                (setq holder (let ((overlay (cera-frame--field-holder field)))
+                               (cons (overlay-start overlay)
+                                     (overlay-get overlay 'priority)))
+                      under-rows (cera-frame--field-under-rows field)
+                      panes (mapcar (lambda (overlay)
+                                      (cons (overlay-start overlay)
+                                            (overlay-get overlay 'priority)))
+                                    (seq-filter
+                                     (lambda (overlay) (overlay-get overlay 'before-string))
+                                     (cera--session-static-overlays cera--active))))))
+            (cera-accept))
+        (cera-frame-read-stack
+         (list (cera-pane :id 'above :kind 'readonly :text "a note" :bracket nil)
+               (cera-pane :id 'input :kind 'input :text "note")
+               (cera-pane :id 'under :kind 'readonly :text "status" :bracket nil))
+         nil))
+      (set-window-buffer (selected-window) shown)
+      (should panes)
+      (dolist (pane panes)
+        (should (= (car pane) (car holder)))
+        (should (> (cdr holder) (cdr pane))))
+      (should (= under-rows 1)))))
+
+;; A dashboard redraws itself around an open field, moving the lines the
+;; source is on; the brackets are redrawn over the lines, not the offsets.
+(ert-deftest cera-frame-keeps-the-source-when-the-buffer-shifts-under-it ()
+  "Text put in above the source moves its bracket with it."
+  (with-temp-buffer
+    (insert "alpha\nbeta\ngamma\n")
+    (let ((buffer (current-buffer))
+          prefixes)
+      (cera-frame-test--reading
+          (lambda ()
+            (with-current-buffer buffer
+              (save-excursion
+                (goto-char (point-min))
+                (let ((inhibit-read-only t)) (insert "\n\n")))
+              (cera--draw-static cera--active)
+              (setq prefixes
+                    (mapcar (lambda (line)
+                              (save-excursion
+                                (goto-char (point-min))
+                                (forward-line line)
+                                (let ((prefix (get-char-property (point) 'line-prefix)))
+                                  (and prefix (substring-no-properties prefix)))))
+                            '(2 3 4))))
+            (cera-accept))
+        (cera-frame-read-stack
+         (list (cera-pane :id 'source :kind 'readonly :bounds (cons 7 11)
+                          :connection 'next)
+               (cera-pane :id 'input :kind 'input :text "" :connection 'previous))
+         nil))
+      (should-not (nth 0 prefixes))
+      (should (string-match-p "╭" (nth 1 prefixes)))
+      (should-not (nth 2 prefixes)))))
+
+(defun cera-frame-test--scroll-window (enabled)
+  "Return what the field's child answers for the other window, ENABLED or not."
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (let ((cera-input-backend 'frame)
+          (cera-frame-scroll-parent enabled)
+          (buffer (current-buffer))
+          (shown (window-buffer (selected-window)))
+          scrolled)
+      (set-window-buffer (selected-window) buffer)
+      (cera-frame-test--reading
+          (lambda ()
+            (let ((field (buffer-local-value 'cera-frame--field buffer)))
+              (with-current-buffer (cera-frame--field-child field)
+                (setq scrolled (cons other-window-scroll-default
+                                     (cera-frame--field-window field)))))
+            (cera-accept))
+        (cera-read nil "note"))
+      (set-window-buffer (selected-window) shown)
+      scrolled)))
+
+(ert-deftest cera-frame-leaves-the-other-window-alone-unless-asked ()
+  "The lookup stands as Emacs makes it until `cera-frame-scroll-parent'."
+  (should-not (car (cera-frame-test--scroll-window nil))))
+
+(ert-deftest cera-frame-scrolls-the-window-it-is-read-over ()
+  "\"The other window\" from inside the field is the buffer it was opened for."
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (let ((cera-input-backend 'frame)
+          (cera-frame-scroll-parent t)
+          (buffer (current-buffer))
+          (shown (window-buffer (selected-window)))
+          scrolled over)
+      (set-window-buffer (selected-window) buffer)
+      (cera-frame-test--reading
+          (lambda ()
+            (let ((field (buffer-local-value 'cera-frame--field buffer)))
+              (setq over (cera-frame--field-window field))
+              (with-current-buffer (cera-frame--field-child field)
+                (setq scrolled (funcall other-window-scroll-default))))
+            (cera-accept))
+        (cera-read nil "note"))
+      (set-window-buffer (selected-window) shown)
+      (should (window-live-p scrolled))
+      (should (eq scrolled over)))))
+
+(ert-deftest cera-frame-counts-a-header-line-once ()
+  "The rows are counted from the window's top, which a header line is part of.
+`pos-visible-in-window-p' reports the first text row at the header
+line's height, so that offset taken from the window's top is the text
+area itself rather than a row below it."
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (setq header-line-format " header")
+    (let ((shown (window-buffer (selected-window))))
+      (set-window-buffer (selected-window) (current-buffer))
+      (unwind-protect
+          (let* ((window (selected-window))
+                 (inside (nth 1 (window-inside-pixel-edges window)))
+                 (header (- inside (nth 1 (window-pixel-edges window)))))
+            (should (> header 0))
+            (should (= (cera-frame--row-top window header) inside)))
+        (set-window-buffer (selected-window) shown)))))
+
+(ert-deftest cera-frame-marks-its-frame-against-the-workspace-managers ()
+  "The frame carries the flag telling a workspace manager to leave it alone.
+A parameter named in `cera-frame-parameters' is the one the frame is
+made with, whatever the default beneath it says."
+  (let ((parameters (cera-frame--parameters (selected-frame) "#000000")))
+    (should (eq (alist-get 'persp-ignore-wconf parameters) t))
+    (should (eq (alist-get 'parent-frame parameters) (selected-frame)))
+    (should (eq (alist-get 'unsplittable parameters) t)))
+  (let* ((cera-frame-parameters '((unsplittable . nil)))
+         (parameters (cera-frame--parameters (selected-frame) "#000000")))
+    (should-not (alist-get 'unsplittable parameters)))
+  ;; The frame's fringes are the window's, so both centre a line alike.
+  (let ((parameters (cera-frame--parameters (selected-frame) "#000000" '(0 0))))
+    (should (eql (alist-get 'left-fringe parameters) 0))
+    (should (eql (alist-get 'right-fringe parameters) 0)))
+  (let ((parameters (cera-frame--parameters (selected-frame) "#000000" '(8 8))))
+    (should (eql (alist-get 'right-fringe parameters) 8))))
+
+(ert-deftest cera-frame-gives-back-a-frame-another-command-took ()
+  "A buffer laid over the input releases the field and goes to the window below.
+The field is cancelled as it is for a command taking the buffer whole:
+what was written is on the kill ring, and the buffer the command meant
+to show is in the window the field was read over."
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (let ((cera-input-backend 'frame)
+          (shown (generate-new-buffer "shown"))
+          (layout (current-window-configuration))
+          (kill-ring nil))
+      (unwind-protect
+          (progn
+            (cera-frame-test--should-quit
+              (cera-frame-test--reading
+                  (lambda ()
+                    (insert "typed")
+                    (cl-letf (((symbol-function 'cera-frame--taken-p)
+                               (lambda (_field) shown)))
+                      (cera-frame--reclaim))
+                    (should-not cera--active)
+                    (should (equal (current-kill 0) "typed"))
+                    (should (eq (window-buffer (selected-window)) shown)))
+                (cera-read nil)))
+            (should-not cera-frame--fields)
+            (should-not (memq #'cera-frame--reclaim
+                              window-configuration-change-hook)))
+        (set-window-configuration layout)
+        (kill-buffer shown)))))
 
 (provide 'cera-frame-test)
 ;;; cera-frame-test.el ends here

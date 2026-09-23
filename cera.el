@@ -134,9 +134,11 @@ and a pane with BRACKET nil shows its text alone.  PREFIX-POSITION is
 supplied read-only TEXT is displayed without insertion.
 An empty supplied read-only TEXT hides the pane.  WRAP carries a line
 too wide for the window onto the next row; a pane with WRAP nil cuts it
-short instead, and keeps a line of text to a line of the pane."
+short instead, and keeps a line of text to a line of the pane.
+ALIGN `input' starts a pane without BRACKET in the column the input's
+text does, past its bracket and prefix."
   id kind text bounds (bracket t) prefix (prefix-position 'bottom) face
-  connection (wrap t))
+  connection (wrap t) align)
 
 (defun cera-set-pane-text (pane text)
   "Set PANE's supplied TEXT, and return PANE.
@@ -154,6 +156,11 @@ Called with PANES and returning PANES, before any document changes.")
 
 (defvar cera-session-start-hook nil
   "Functions called with SESSION once its input is ready in the current buffer.")
+
+(defvar cera-update-pane-functions nil
+  "Functions called with ID and TEXT for a pane the open session does not hold.
+The first to answer non-nil has taken the update, and the pane is
+drawn by whoever holds it.")
 
 (defvar cera-session-teardown-hook nil
   "Functions called with SESSION before its text and locals are restored.")
@@ -206,9 +213,16 @@ rather than with the current buffer."
   (declare (indent 0) (debug t))
   `(with-current-buffer (or cera--field-buffer (current-buffer)) ,@body))
 
-(defun cera--live-p ()
-  "Return non-nil when a field reader is active in this buffer."
-  (and cera--active t))
+;;;###autoload
+(defun cera-field-open-p (&optional buffer)
+  "Return non-nil while a field is open over BUFFER, the current one by default.
+A field brackets the lines it is read beside with overlays and holds
+markers into them, so a buffer that rewrites its own text — a dashboard
+redrawing itself, a mode re-rendering its report — asks this first and
+puts that work off while the answer stands.  It is non-nil in the buffer
+the field was read for, whether the input is written there or in a child
+frame laid over it."
+  (and (buffer-local-value 'cera--active (or buffer (current-buffer))) t))
 
 (defun cera--field-bounds (&optional session)
   "Return SESSION's field as a cons of its BEGIN and END positions.
@@ -335,6 +349,19 @@ bracket carried on from it into the input."
                                      (- cera-input-prefix-width
                                         (string-width prefix)))
                  cera--bracket-onward))))
+
+(defun cera--text-column ()
+  "Return the column the input's text begins at, with or without a prefix."
+  (if (cera--input-prefix)
+      (cera--input-column)
+    (+ (cera--indent) cera-bracket-width)))
+
+(defun cera--input-lead (&optional aligned)
+  "Return blank space reaching the column the input begins at, following ALIGNED."
+  (let ((cera--aligned (or aligned "")))
+    (cera--indented
+     (concat aligned (cera--stretched-to (cera--text-column)
+                                         (- (cera--text-column) (cera--indent)))))))
 
 (defun cera--shaded (color)
   "Return COLOR moved `cera-body-shade' percent away from the theme's own.
@@ -505,13 +532,20 @@ Without WRAP a line too wide is cut short rather than carried on."
         (setq start (1+ break))))
     (nreverse rows)))
 
-(defun cera--virtual-text (pane width)
-  "Render PANE's supplied text within WIDTH columns."
+(defun cera--virtual-text (pane width &optional aligned)
+  "Render PANE's supplied text within WIDTH columns, following ALIGNED text.
+ALIGNED is the prefix the lines beside the field are drawn behind, and
+every row the pane shows starts behind it as they do."
   (let* ((bracket (cera-pane-bracket pane))
+         (lead (and (not bracket) (eq (cera-pane-align pane) 'input)
+                    (cera--input-lead aligned)))
          (rows (cera--pane-rows
                 (cera--pane-blocks pane)
                 (max 1 (- width (cera--indent)
-                          (if bracket (cera--pane-width pane) 0) 1))
+                          (cond (bracket (cera--pane-width pane))
+                                (lead (- (cera--text-column) (cera--indent)))
+                                (t 0))
+                          1))
                 (cera-pane-wrap pane)))
          (rows (if (and bracket (= (length rows) 1)
                         (not (cera-pane-connection pane)))
@@ -528,7 +562,11 @@ Without WRAP a line too wide is cut short rather than carried on."
                          (propertize (copy-sequence (car row)) 'face face)
                        (car row))))
           (cl-incf index)
-          (concat (and bracket (cera--pane-decoration pane endpoint))
+          (concat (cond
+                   (bracket (cera--pane-decoration pane endpoint aligned))
+                   ((string-empty-p (car row)) nil)
+                   (lead)
+                   (aligned))
                   body (cdr row))))
       rows "")
      'line-prefix "" 'wrap-prefix "")))
@@ -561,7 +599,9 @@ carries its bracket, drawn after the panes and before the line's text."
     (dolist (geometry (cera--session-width session))
       (let* ((text (concat (unless (save-excursion (goto-char origin) (bolp)) "\n")
                            (mapconcat (lambda (pane)
-                                        (cera--virtual-text pane (cdr geometry)))
+                                        (cera--virtual-text
+                                         pane (cdr geometry)
+                                         (cera--session-aligned session)))
                                       panes "")
                            opening))
              (closing (cera--closing-newline text origin))
@@ -600,7 +640,9 @@ which the first line of a buffer has not got."
         (tail (cera--session-tail session)) pending)
     (dolist (pane (cl-remove-if-not #'cera--pane-visible-p
                                     (cera--session-panes session)))
-      (if-let* ((start (cera--pane-start session pane)))
+      (if-let* ((start (or (cera--pane-start session pane)
+                           (and (eq (cera-pane-kind pane) 'input)
+                                (cera--session-tail session)))))
           (let ((opening nil))
             (when (eq (cera-pane-kind pane) 'input)
               (setq tail (cera--session-tail session)))
@@ -677,13 +719,18 @@ undo and completion are not changed.  Empty TEXT hides the pane."
     (user-error "No field is open"))
   (let ((pane (cl-find id (cera--session-panes cera--active)
                        :key #'cera-pane-id :test #'equal)))
-    (unless (and pane (eq (cera-pane-kind pane) 'readonly)
-                 (not (cera-pane-bounds pane))
-                 (cera--pane-content-p text))
+    (cond
+     ((and (null pane) (cera--pane-content-p text)
+           (run-hook-with-args-until-success 'cera-update-pane-functions id text))
+      t)
+     ((not (and pane (eq (cera-pane-kind pane) 'readonly)
+                (not (cera-pane-bounds pane))
+                (cera--pane-content-p text)))
       (user-error "Not a supplied read-only pane: %S" id))
-    (setf (cera-pane-text pane) (cera--copy-content text))
-    (cera--draw-static cera--active)
-    t))
+     (t
+      (setf (cera-pane-text pane) (cera--copy-content text))
+      (cera--draw-static cera--active)
+      t))))
 
 
 ;;;; Completion
@@ -1291,6 +1338,7 @@ document as it was."
                    (memq (cera-pane-kind pane) '(input readonly))
                    (memq (cera-pane-bracket pane) '(nil t))
                    (memq (cera-pane-prefix-position pane) '(top bottom))
+                   (memq (cera-pane-align pane) '(nil input))
                    (or (null (cera-pane-prefix pane)) (stringp (cera-pane-prefix pane))))
         (user-error "Invalid or duplicate pane: %S" pane))
       (push (cera-pane-id pane) ids)
