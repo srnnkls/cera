@@ -137,9 +137,11 @@ too wide for the window onto the next row; a pane with WRAP nil cuts it
 short instead, and keeps a line of text to a line of the pane.
 ALIGN `input' starts a pane without BRACKET in the column the input's
 text does, past its bracket and prefix.  INDENT sets every row of the
-pane's text in by that many columns, the rows WRAP carries on included."
+pane's text in by that many columns, the rows WRAP carries on included.
+MAX-WIDTH caps a row, its INDENT included, at that many columns however
+wide the window is; nil leaves the window to decide."
   id kind text bounds (bracket t) prefix (prefix-position 'bottom) face
-  connection (wrap t) align (indent 0))
+  connection (wrap t) align (indent 0) max-width)
 
 (defun cera-set-pane-text (pane text)
   "Set PANE's supplied TEXT, and return PANE.
@@ -562,11 +564,13 @@ every row the pane shows starts behind it as they do."
          (indent (make-string (cera-pane-indent pane) ?\s))
          (rows (cera--pane-rows
                 (cera--pane-blocks pane)
-                (max 1 (- width (cera--indent) (length indent)
-                          (cond (bracket (cera--pane-width pane))
-                                (lead (- (cera--text-column) (cera--indent)))
-                                (t 0))
-                          1))
+                (cera--capped pane
+                              (max 1 (- width (cera--indent) (length indent)
+                                        (cond (bracket (cera--pane-width pane))
+                                              (lead (- (cera--text-column)
+                                                       (cera--indent)))
+                                              (t 0))
+                                        1)))
                 (cera-pane-wrap pane)))
          (rows (if (and bracket (= (length rows) 1)
                         (not (cera-pane-connection pane)))
@@ -833,6 +837,13 @@ they show."
              (cera--prefix-text (get-char-property (line-beginning-position)
                                                    'line-prefix)))))))))
 
+(defun cera--capped (pane room)
+  "Return ROOM, the columns PANE's text has, held to its MAX-WIDTH.
+The cap counts the pane's indentation, so the text has what is left."
+  (if-let* ((max-width (cera-pane-max-width pane)))
+      (max 1 (min room (- max-width (cera-pane-indent pane))))
+    room))
+
 (defun cera--beside-text (panes width column start)
   "Return PANES as rows set out from COLUMN beside a line ending at START.
 WIDTH is the columns the window shows.  The run up to the first row
@@ -853,9 +864,10 @@ COLUMN gets the rows unwrapped."
                                         (car row))))
                             (cera--pane-rows
                              (cera--pane-blocks pane)
-                             (if (> room 8)
-                                 (max 1 (- room (length indent)))
-                               most-positive-fixnum)
+                             (cera--capped pane
+                                           (if (> room 8)
+                                               (max 1 (- room (length indent)))
+                                             most-positive-fixnum))
                              (cera-pane-wrap pane)))))
                 panes)))
     (when rows

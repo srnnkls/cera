@@ -1659,3 +1659,23 @@ the panes are drawn as."
            (overlay (car (cera-shown-overlays shown))))
       (should (= (overlay-start overlay) (point-max)))
       (should (string-match-p "a note" (overlay-get overlay 'after-string))))))
+
+(ert-deftest cera-pane-max-width-caps-rows-however-wide-the-window ()
+  "A row, its indentation included, stays within MAX-WIDTH."
+  (let* ((pane (cera-pane :id 'note :kind 'readonly :bracket nil :indent 2
+                          :max-width 20
+                          :text "one two three four five six seven eight nine"))
+         (rows (split-string (substring-no-properties
+                              (cera--virtual-text pane 200))
+                             "\n" t)))
+    (should (> (length rows) 1))
+    (dolist (row rows)
+      (should (<= (string-width row) 20))))
+  (should (equal (split-string (substring-no-properties
+                                (cera--beside-text
+                                 (list (cera-pane :id 'note :kind 'readonly
+                                                  :max-width 10
+                                                  :text "one two three"))
+                                 200 4 2))
+                               "\n")
+                 '("  one two" "    three"))))
