@@ -611,6 +611,11 @@ every row the pane shows starts behind it as they do."
             (cons window (window-body-width (or window (selected-window)))))
           (or (get-buffer-window-list (current-buffer) nil t) '(nil))))
 
+(defconst cera--pane-face '((:extend t) default)
+  "Face a shown pane's text wears under its own, out to the window's edge.
+The default face alone does not reach past a row's end, where the face
+of the line the panes hang from would show instead.")
+
 (defun cera--draw-virtual (owner panes anchor widths aligned &optional opening)
   "Display OWNER's virtual PANES in order at ANCHOR in each window.
 WIDTHS pairs each window with the columns it shows, and ALIGNED is the
@@ -625,12 +630,17 @@ carries its bracket, drawn after the panes and before the line's text."
                     (1- anchor)
                   anchor)))
     (dolist (geometry widths)
-      (let* ((text (concat (unless (save-excursion (goto-char origin) (bolp)) "\n")
-                           (mapconcat (lambda (pane)
+      (let* ((shown (cera-shown-p owner))
+             (body (concat (mapconcat (lambda (pane)
                                         (cera--virtual-text
                                          pane (cdr geometry) aligned))
                                       panes "")
                            opening))
+             (text (concat (unless (save-excursion (goto-char origin) (bolp))
+                             (if shown
+                                 (propertize "\n" 'face (get-text-property origin 'face))
+                               "\n"))
+                           (if shown (cera--own-face body) body)))
              (closing (cera--closing-newline text origin))
              (overlay (cera--overlay owner origin (if closing (1+ origin) origin)
                                      'window (car geometry)
@@ -640,7 +650,18 @@ carries its bracket, drawn after the panes and before the line's text."
                                        text))))
         (when closing
           (overlay-put overlay 'line-spacing closing)
-          (overlay-put overlay 'evaporate nil))))))
+          (overlay-put overlay 'evaporate nil)
+          (when shown
+            (overlay-put overlay 'face cera--pane-face)))))))
+
+(defun cera--own-face (text)
+  "Return TEXT drawn in the default face wherever it wears none of its own.
+Panes shown outside a field stand on lines of their own, but a character
+of a display string with no face takes the face of the text it is shown
+at, so the line they hang from would lend them its background."
+  (let ((copy (copy-sequence text)))
+    (add-face-text-property 0 (length copy) cera--pane-face t copy)
+    copy))
 
 (defun cera--closing-newline (text origin)
   "Return the room TEXT asks for under its last row, for ORIGIN to hold.
@@ -872,9 +893,9 @@ COLUMN gets the rows unwrapped."
                 panes)))
     (when rows
       (concat (make-string (max 1 (- column start)) ?\s)
-              (mapconcat #'identity rows
-                         (propertize (concat "\n" (make-string column ?\s))
-                                     'face 'default))))))
+              (cera--own-face
+               (mapconcat #'identity rows
+                          (concat "\n" (make-string column ?\s))))))))
 
 (defun cera--draw-beside (shown panes)
   "Draw PANES of SHOWN beside the line point is on, from its column.
@@ -889,6 +910,8 @@ to cover, and carries them after itself instead."
       (when-let* ((text (cera--beside-text panes (cdr geometry)
                                            (cera-shown-column shown) start)))
         (let ((overlay (make-overlay eol (if ending eol (1+ eol)) nil t nil)))
+          (unless ending
+            (overlay-put overlay 'face cera--pane-face))
           (overlay-put overlay 'cera t)
           (overlay-put overlay 'priority 1001)
           (overlay-put overlay 'window (car geometry))

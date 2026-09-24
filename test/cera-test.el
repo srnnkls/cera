@@ -1679,3 +1679,22 @@ the panes are drawn as."
                                  200 4 2))
                                "\n")
                  '("  one two" "    three"))))
+
+(ert-deftest cera-shown-panes-do-not-take-the-face-of-their-line ()
+  "Panes shown under or beside a line are drawn in their own faces.
+The line they hang from keeps its face up to where it ends."
+  (dolist (column '(nil 10))
+    (with-temp-buffer
+      (insert (propertize "+added\n" 'face 'diff-added) "next\n")
+      (let* ((shown (cera-pane-show
+                     (list (cera-pane :id 'note :kind 'readonly :bracket nil
+                                      :indent 2 :text "a note"))
+                     1 column))
+             (overlay (car (cera-shown-overlays shown)))
+             (text (overlay-get overlay 'before-string))
+             (at (string-search "a note" text)))
+        (should (memq 'default (ensure-list (get-text-property at 'face text))))
+        (should (memq 'default (ensure-list (get-text-property (1- at) 'face text))))
+        (should (equal (overlay-get overlay 'face) '((:extend t) default)))
+        (unless column
+          (should (eq (get-text-property 0 'face text) 'diff-added)))))))
