@@ -1,2 +1,4 @@
 .eask/
 *.elc
+/cera-autoloads.el
+/cera-pkg.el
