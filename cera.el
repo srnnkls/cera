@@ -611,10 +611,14 @@ every row the pane shows starts behind it as they do."
             (cons window (window-body-width (or window (selected-window)))))
           (or (get-buffer-window-list (current-buffer) nil t) '(nil))))
 
-(defconst cera--pane-face '((:extend t) default)
-  "Face a shown pane's text wears under its own, out to the window's edge.
-The default face alone does not reach past a row's end, where the face
-of the line the panes hang from would show instead.")
+(defun cera--pane-face ()
+  "Return the face a shown pane's text wears under its own.
+A display string is drawn over the face of the text it is shown at, and
+naming the default face overrides nothing there, so its colours are
+spelled out, and carried to the window's edge past a row's end."
+  (list :foreground (face-foreground 'default nil t)
+        :background (face-background 'default nil t)
+        :extend t))
 
 (defun cera--draw-virtual (owner panes anchor widths aligned &optional opening)
   "Display OWNER's virtual PANES in order at ANCHOR in each window.
@@ -652,7 +656,7 @@ carries its bracket, drawn after the panes and before the line's text."
           (overlay-put overlay 'line-spacing closing)
           (overlay-put overlay 'evaporate nil)
           (when shown
-            (overlay-put overlay 'face cera--pane-face)))))))
+            (overlay-put overlay 'face (cera--pane-face))))))))
 
 (defun cera--own-face (text)
   "Return TEXT drawn in the default face wherever it wears none of its own.
@@ -660,7 +664,7 @@ Panes shown outside a field stand on lines of their own, but a character
 of a display string with no face takes the face of the text it is shown
 at, so the line they hang from would lend them its background."
   (let ((copy (copy-sequence text)))
-    (add-face-text-property 0 (length copy) cera--pane-face t copy)
+    (add-face-text-property 0 (length copy) (cera--pane-face) t copy)
     copy))
 
 (defun cera--closing-newline (text origin)
@@ -911,7 +915,7 @@ to cover, and carries them after itself instead."
                                            (cera-shown-column shown) start)))
         (let ((overlay (make-overlay eol (if ending eol (1+ eol)) nil t nil)))
           (unless ending
-            (overlay-put overlay 'face cera--pane-face))
+            (overlay-put overlay 'face (cera--pane-face)))
           (overlay-put overlay 'cera t)
           (overlay-put overlay 'priority 1001)
           (overlay-put overlay 'window (car geometry))

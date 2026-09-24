@@ -1693,8 +1693,8 @@ The line they hang from keeps its face up to where it ends."
              (overlay (car (cera-shown-overlays shown)))
              (text (overlay-get overlay 'before-string))
              (at (string-search "a note" text)))
-        (should (memq 'default (ensure-list (get-text-property at 'face text))))
-        (should (memq 'default (ensure-list (get-text-property (1- at) 'face text))))
-        (should (equal (overlay-get overlay 'face) '((:extend t) default)))
+        (should (equal (get-text-property at 'face text) (cera--pane-face)))
+        (should (equal (get-text-property (1- at) 'face text) (cera--pane-face)))
+        (should (equal (overlay-get overlay 'face) (cera--pane-face)))
         (unless column
           (should (eq (get-text-property 0 'face text) 'diff-added)))))))
