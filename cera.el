@@ -136,9 +136,10 @@ An empty supplied read-only TEXT hides the pane.  WRAP carries a line
 too wide for the window onto the next row; a pane with WRAP nil cuts it
 short instead, and keeps a line of text to a line of the pane.
 ALIGN `input' starts a pane without BRACKET in the column the input's
-text does, past its bracket and prefix."
+text does, past its bracket and prefix.  INDENT sets every row of the
+pane's text in by that many columns, the rows WRAP carries on included."
   id kind text bounds (bracket t) prefix (prefix-position 'bottom) face
-  connection (wrap t) align)
+  connection (wrap t) align (indent 0))
 
 (defun cera-set-pane-text (pane text)
   "Set PANE's supplied TEXT, and return PANE.
@@ -148,10 +149,11 @@ the struct is, so the text it wants a pane opened with is set here."
   pane)
 
 (cl-defstruct (cera-shown (:constructor cera--make-shown) (:copier nil))
-  "Read-only PANES shown in BUFFER under the line ANCHOR is on.
-OVERLAYS draw them, one per window, laid out for the WIDTHS those
-windows had when they were drawn."
-  buffer anchor panes overlays widths)
+  "Read-only PANES shown in BUFFER by the line ANCHOR is on.
+They are drawn under that line, or beside it from COLUMN on.  OVERLAYS
+draw them, one per window, laid out for the WIDTHS those windows had
+when they were drawn."
+  buffer anchor panes overlays widths column)
 
 (defvar cera-read-context-function nil
   "Optional function transforming the normalized panes of `cera-read'.
@@ -525,6 +527,8 @@ to `cera--text-rows\='."
   "Split TEXT into display rows no wider than WIDTH columns.
 A row comes with the newline that ended it, which is where text asks for
 the room around its line; a row the width broke off ends in a plain one.
+The width breaks a line at the last space that fits, and a word wider
+than a row on its own is broken where the row ends.
 Without WRAP a line too wide is cut short rather than carried on."
   (let ((start 0) (length (length text)) rows)
     (while (<= start length)
@@ -534,10 +538,16 @@ Without WRAP a line too wide is cut short rather than carried on."
         (if (not wrap)
             (setq line (truncate-string-to-width line width nil nil t))
           (while (> (string-width line) width)
-            (let ((part (truncate-string-to-width line width)))
-              (when (string-empty-p part) (setq part (substring line 0 1)))
-              (push (cons part "\n") rows)
-              (setq line (substring line (length part))))))
+            (let* ((part (truncate-string-to-width line width))
+                   (part (if (string-empty-p part) (substring line 0 1) part))
+                   (space (if (eq (aref line (length part)) ?\s)
+                              (length part)
+                            (cl-position ?\s part :from-end t))))
+              (if (and space (> space 0))
+                  (progn (push (cons (substring line 0 space) "\n") rows)
+                         (setq line (substring line (1+ space))))
+                (push (cons part "\n") rows)
+                (setq line (substring line (length part)))))))
         (push (cons line newline) rows)
         (setq start (1+ break))))
     (nreverse rows)))
@@ -549,9 +559,10 @@ every row the pane shows starts behind it as they do."
   (let* ((bracket (cera-pane-bracket pane))
          (lead (and (not bracket) (eq (cera-pane-align pane) 'input)
                     (cera--input-lead aligned)))
+         (indent (make-string (cera-pane-indent pane) ?\s))
          (rows (cera--pane-rows
                 (cera--pane-blocks pane)
-                (max 1 (- width (cera--indent)
+                (max 1 (- width (cera--indent) (length indent)
                           (cond (bracket (cera--pane-width pane))
                                 (lead (- (cera--text-column) (cera--indent)))
                                 (t 0))
@@ -577,6 +588,7 @@ every row the pane shows starts behind it as they do."
                    ((string-empty-p (car row)) nil)
                    (lead)
                    (aligned))
+                  (unless (string-empty-p (car row)) indent)
                   body (cdr row))))
       rows "")
      'line-prefix "" 'wrap-prefix "")))
@@ -675,12 +687,17 @@ which the first line of a buffer has not got."
                              (heads (and (= (point) start)
                                          (cera--heads-the-buffer-p pending start))))
                         (when heads (setq opening decoration))
-                        (cera--overlay
-                         session (point) next
-                         'line-prefix (if heads "" decoration)
-                         'wrap-prefix (cera--pane-decoration
-                                       pane 'middle (cera--prefix-text
-                                                     (get-char-property (point) 'wrap-prefix))))
+                        (let ((wrap (cera--pane-decoration
+                                     pane 'middle (cera--prefix-text
+                                                   (get-char-property (point) 'wrap-prefix)))))
+                          (cera--overlay session (point) (1+ (point))
+                                         'line-prefix (if heads "" decoration)
+                                         'wrap-prefix wrap)
+                          (when (< (1+ (point)) next)
+                            (cera--overlay session (1+ (point)) next
+                                           'line-prefix (cera--pane-decoration
+                                                         pane 'middle aligned)
+                                           'wrap-prefix wrap)))
                         (goto-char next)))
                     (cera--absorb-indentation session start end)))
                 (when-let* ((face (cera-pane-face pane)))
@@ -753,16 +770,23 @@ undo and completion are not changed.  Empty TEXT hides the pane."
 (defvar-local cera--shown nil
   "Panes shown in this buffer outside a field.")
 
-(defun cera-pane-show (panes position)
-  "Show read-only PANES under the line POSITION is on, and return them.
-PANES are `cera-pane' descriptors with supplied text, drawn the way a
-field draws its read-only panes, in list order.  They stay without a
-field open until `cera-pane-remove', move with the line as the text
-around it is edited, and are laid out again when a window showing them
-changes width.  `cera-pane-update' replaces what they show."
+(defun cera-pane-show (panes position &optional column)
+  "Show read-only PANES by the line POSITION is on, and return them.
+PANES are `cera-pane' descriptors with supplied text, in list order.
+Without COLUMN they are drawn under the line, the way a field draws its
+read-only panes.  With COLUMN they are drawn beside it: the first row
+from COLUMN on the line itself, or one space past its end when the line
+reaches further, and every row after it from COLUMN on a line of its
+own.  Each pane's INDENT and WRAP apply either way.
+
+They stay without a field open until `cera-pane-remove', move with the
+line as the text around it is edited, and are laid out again when a
+window showing them changes width.  `cera-pane-update' replaces what
+they show."
   (let ((shown (cera--make-shown :buffer (current-buffer)
                                  :anchor (copy-marker position)
-                                 :panes panes)))
+                                 :panes panes
+                                 :column column)))
     (unless cera--shown
       (add-hook 'window-size-change-functions #'cera--reflow-shown nil t)
       (add-hook 'window-configuration-change-hook #'cera--reflow-shown nil t))
@@ -789,7 +813,7 @@ changes width.  `cera-pane-update' replaces what they show."
         (remove-hook 'window-configuration-change-hook #'cera--reflow-shown t)))))
 
 (defun cera--draw-shown (shown)
-  "Draw the panes of SHOWN under the line its anchor is on."
+  "Draw the panes of SHOWN by the line its anchor is on."
   (with-current-buffer (cera-shown-buffer shown)
     (mapc #'delete-overlay (cera-shown-overlays shown))
     (setf (cera-shown-overlays shown) nil
@@ -798,12 +822,66 @@ changes width.  `cera-pane-update' replaces what they show."
       (save-restriction
         (widen)
         (goto-char (cera-shown-anchor shown))
-        (cera--draw-virtual
-         shown (cl-remove-if-not #'cera--pane-visible-p (cera-shown-panes shown))
-         (min (point-max) (1+ (line-end-position)))
-         (cera-shown-widths shown)
-         (cera--prefix-text (get-char-property (line-beginning-position)
-                                               'line-prefix)))))))
+        (let ((panes (cl-remove-if-not #'cera--pane-visible-p
+                                       (cera-shown-panes shown))))
+          (if (cera-shown-column shown)
+              (cera--draw-beside shown panes)
+            (cera--draw-virtual
+             shown panes
+             (min (point-max) (1+ (line-end-position)))
+             (cera-shown-widths shown)
+             (cera--prefix-text (get-char-property (line-beginning-position)
+                                                   'line-prefix)))))))))
+
+(defun cera--beside-text (panes width column start)
+  "Return PANES as rows set out from COLUMN beside a line ending at START.
+WIDTH is the columns the window shows.  The run up to the first row
+carries no face, so whatever the line wears shows through it; the runs
+opening the rows below are faced, since display-only lines have nothing
+behind them to show.  A window too narrow to leave a row room past
+COLUMN gets the rows unwrapped."
+  (let* ((room (- width column 1))
+         (rows (mapcan
+                (lambda (pane)
+                  (let ((indent (make-string (cera-pane-indent pane) ?\s))
+                        (face (cera-pane-face pane)))
+                    (mapcar (lambda (row)
+                              (concat indent
+                                      (if face
+                                          (propertize (copy-sequence (car row))
+                                                      'face face)
+                                        (car row))))
+                            (cera--pane-rows
+                             (cera--pane-blocks pane)
+                             (if (> room 8)
+                                 (max 1 (- room (length indent)))
+                               most-positive-fixnum)
+                             (cera-pane-wrap pane)))))
+                panes)))
+    (when rows
+      (concat (make-string (max 1 (- column start)) ?\s)
+              (mapconcat #'identity rows
+                         (propertize (concat "\n" (make-string column ?\s))
+                                     'face 'default))))))
+
+(defun cera--draw-beside (shown panes)
+  "Draw PANES of SHOWN beside the line point is on, from its column.
+The overlay covers the line's newline and carries the rows in front of
+it, starting after the line's text, so what is typed at the end of the
+line stays in front of them.  The last line of a buffer has no newline
+to cover, and carries them after itself instead."
+  (let* ((eol (line-end-position))
+         (start (progn (goto-char eol) (current-column)))
+         (ending (= eol (point-max))))
+    (dolist (geometry (cera-shown-widths shown))
+      (when-let* ((text (cera--beside-text panes (cdr geometry)
+                                           (cera-shown-column shown) start)))
+        (let ((overlay (make-overlay eol (if ending eol (1+ eol)) nil t nil)))
+          (overlay-put overlay 'cera t)
+          (overlay-put overlay 'priority 1001)
+          (overlay-put overlay 'window (car geometry))
+          (overlay-put overlay (if ending 'after-string 'before-string) text)
+          (push overlay (cera-shown-overlays shown)))))))
 
 (defun cera--reflow-shown (&optional window)
   "Lay the shown panes of WINDOW's buffer out again for its new width."

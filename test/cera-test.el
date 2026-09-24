@@ -189,6 +189,21 @@ under the text it belongs to instead of at the window's edge."
 	(should (equal (cera-read nil "note") "note")))
       (should-not (overlays-in (point-min) (point-max))))))
 
+(ert-deftest cera-continues-the-bracket-past-a-line-s-first-character ()
+  "Only a line's first character opens its bracket.
+A row an overlay string's newline opens, as an annotation hung at the
+end of the line does, takes the `line-prefix' where the string hangs, so
+that row continues the bracket rather than opening it again."
+  (with-temp-buffer
+    (insert "source\nnext\n")
+    (goto-char 2)
+    (cera-test--reading
+        (lambda ()
+          (should (string-suffix-p "╭ " (get-char-property 1 'line-prefix)))
+          (should (string-suffix-p "│ " (get-char-property 7 'line-prefix)))
+          (cera-accept))
+      (should (equal (cera-read nil "note") "note")))))
+
 (ert-deftest cera-previews-exact-selection-from-its-first-line ()
   "Partial words and multiline selections are previewed before any input."
   (dolist (fixture '(("before words after\nnext\n" (8 . 13)
@@ -1588,8 +1603,59 @@ the panes are drawn as."
                                       :text "one two three four five six"))
                      1)))
            (wide (cera-test--shown-text shown)))
-      (setq widths '((nil . 16)))
+      (setq widths '((nil . 12)))
       (cl-letf (((symbol-function 'cera--display-widths) (lambda () widths)))
         (cera--reflow-shown))
       (should (> (cl-count ?\n (cera-test--shown-text shown))
                  (cl-count ?\n wide))))))
+
+(ert-deftest cera-pane-indent-sets-in-every-row-it-wraps-to ()
+  "An indented pane keeps its indentation on the rows wrapping carries on."
+  (let* ((pane (cera-pane :id 'reply :kind 'readonly :bracket nil :indent 4
+                          :text "one two three four five six seven"))
+         (rows (split-string (substring-no-properties
+                              (cera--virtual-text pane 16))
+                             "\n" t)))
+    (should (> (length rows) 1))
+    (dolist (row rows)
+      (should (string-prefix-p "    " row))
+      (should (<= (string-width row) 16)))))
+
+(ert-deftest cera-pane-wraps-at-the-last-space-that-fits ()
+  "Wrapping breaks between words, and a word too wide for a row where it ends."
+  (should (equal (mapcar #'car (cera--text-rows "one two three four" 9 t))
+                 '("one two" "three" "four")))
+  (should (equal (mapcar #'car (cera--text-rows "abcdefghij" 4 t))
+                 '("abcd" "efgh" "ij"))))
+
+(ert-deftest cera-pane-show-beside-sets-rows-out-from-the-column ()
+  "Beside a line the first row starts at COLUMN and the rest under it."
+  (with-temp-buffer
+    (insert "alpha\nbeta\n")
+    (cl-letf (((symbol-function 'cera--display-widths) (lambda () '((nil . 30)))))
+      (let* ((shown (cera-pane-show
+                     (list (cera-pane :id 'note :kind 'readonly
+                                      :text "one two three four five six")
+                           (cera-pane :id 'reply :kind 'readonly :indent 2
+                                      :text "seven"))
+                     2 10))
+             (overlay (car (cera-shown-overlays shown)))
+             (rows (split-string (substring-no-properties
+                                  (overlay-get overlay 'before-string))
+                                 "\n")))
+        (should (= (overlay-start overlay) 6))
+        (should (equal rows '("     one two three four" "          five six"
+                              "            seven")))
+        (goto-char 6)
+        (insert "!")
+        (should (= (overlay-start overlay) 7))))))
+
+(ert-deftest cera-pane-show-beside-the-last-line-without-a-newline ()
+  (with-temp-buffer
+    (insert "alpha")
+    (let* ((shown (cera-pane-show
+                   (list (cera-pane :id 'note :kind 'readonly :text "a note"))
+                   1 10))
+           (overlay (car (cera-shown-overlays shown))))
+      (should (= (overlay-start overlay) (point-max)))
+      (should (string-match-p "a note" (overlay-get overlay 'after-string))))))
