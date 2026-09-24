@@ -1537,11 +1537,11 @@ the panes are drawn as."
       (should-not cera--active)
       (should (equal (list shown) cera--shown))
       (let ((overlay (car (cera-shown-overlays shown))))
-        (should (= (overlay-start overlay) 6))
-        (should (string-match-p "a note" (cera-test--shown-text shown))))
+        (should (= (overlay-start overlay) 7))
+        (should (string-prefix-p "╭ a note" (cera-test--shown-text shown))))
       (goto-char 1)
       (insert "new\n")
-      (should (= (overlay-start (car (cera-shown-overlays shown))) 10)))))
+      (should (= (overlay-start (car (cera-shown-overlays shown))) 11)))))
 
 (ert-deftest cera-pane-update-replaces-what-is-shown ()
   (with-temp-buffer
@@ -1575,8 +1575,9 @@ the panes are drawn as."
     (let ((shown (cera-pane-show
                   (list (cera-pane :id 'note :kind 'readonly :text "a note"))
                   3)))
-      (should (= (overlay-start (car (cera-shown-overlays shown))) (point-max)))
-      (should (string-prefix-p "\n" (cera-test--shown-text shown))))))
+      (let ((overlay (car (cera-shown-overlays shown))))
+        (should (= (overlay-start overlay) (point-max)))
+        (should (string-prefix-p "\n" (overlay-get overlay 'after-string)))))))
 
 (ert-deftest cera-shown-panes-outlive-a-field-read-over-them ()
   "Opening and closing a field leaves the panes shown outside it alone."
@@ -1695,6 +1696,19 @@ The line they hang from keeps its face up to where it ends."
              (at (string-search "a note" text)))
         (should (equal (get-text-property at 'face text) (cera--pane-face)))
         (should (equal (get-text-property (1- at) 'face text) (cera--pane-face)))
-        (should (equal (overlay-get overlay 'face) (cera--pane-face)))
-        (unless column
-          (should (eq (get-text-property 0 'face text) 'diff-added)))))))
+        (when column
+          (should (equal (overlay-get overlay 'face) (cera--pane-face))))))))
+
+(ert-deftest cera-shown-panes-below-a-line-open-the-next-one ()
+  "Moving down from a line with panes under it lands on the next line.
+The rows open the next line, so they stand for its start rather than
+for the end of the line above, where a cursor would stay put."
+  (with-temp-buffer
+    (insert "alpha\nbeta\ngamma\n")
+    (cera-pane-show (list (cera-pane :id 'note :kind 'readonly :bracket nil
+                                     :text "one\ntwo"))
+                    1)
+    (let ((overlay (car (seq-filter (lambda (o) (overlay-get o 'cera))
+                                    (overlays-in (point-min) (point-max))))))
+      (should (= (overlay-start overlay) 7))
+      (should (= (overlay-end overlay) 7)))))

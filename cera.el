@@ -855,12 +855,33 @@ they show."
                                        (cera-shown-panes shown))))
           (if (cera-shown-column shown)
               (cera--draw-beside shown panes)
-            (cera--draw-virtual
-             shown panes
-             (min (point-max) (1+ (line-end-position)))
-             (cera-shown-widths shown)
-             (cera--prefix-text (get-char-property (line-beginning-position)
-                                                   'line-prefix)))))))))
+            (cera--draw-below shown panes)))))))
+
+(defun cera--draw-below (shown panes)
+  "Draw PANES of SHOWN on lines of their own under the line point is on.
+The rows open the next line rather than hang off the end of this one:
+every row of a display string stands for the position it is shown at,
+so rows hung off a line's end would hold a cursor moving down there.
+The last line of a buffer has no next line, and carries them after
+itself."
+  (let* ((next (min (point-max) (1+ (line-end-position))))
+         (ending (not (save-excursion (goto-char next) (bolp))))
+         (aligned (cera--prefix-text (get-char-property (line-beginning-position)
+                                                        'line-prefix))))
+    (dolist (geometry (cera-shown-widths shown))
+      (let ((rows (cera--own-face
+                   (mapconcat (lambda (pane)
+                                (cera--virtual-text pane (cdr geometry) aligned))
+                              panes "")))
+            (overlay (make-overlay next next nil nil nil)))
+        (overlay-put overlay 'cera t)
+        (overlay-put overlay 'priority 1001)
+        (overlay-put overlay 'window (car geometry))
+        (if ending
+            (overlay-put overlay 'after-string
+                         (concat "\n" (string-remove-suffix "\n" rows)))
+          (overlay-put overlay 'before-string rows))
+        (push overlay (cera-shown-overlays shown))))))
 
 (defun cera--capped (pane room)
   "Return ROOM, the columns PANE's text has, held to its MAX-WIDTH.
