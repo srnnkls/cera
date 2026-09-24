@@ -1503,3 +1503,93 @@ the panes are drawn as."
     (should (equal prefix "╭ "))
     (should-not (string-suffix-p "╭ " drawn))
     (should (string-prefix-p "\n" drawn))))
+
+
+;;;; Panes shown outside a field
+
+(defun cera-test--shown-text (shown)
+  "Return the text SHOWN draws, without its properties."
+  (substring-no-properties
+   (overlay-get (car (cera-shown-overlays shown)) 'before-string)))
+
+(ert-deftest cera-pane-show-draws-panes-under-the-line-without-a-field ()
+  "Shown panes hang off the line they were shown on, with no field open."
+  (with-temp-buffer
+    (insert "alpha\nbeta\n")
+    (let ((shown (cera-pane-show
+                  (list (cera-pane :id 'note :kind 'readonly :text "a note"))
+                  2)))
+      (should-not cera--active)
+      (should (equal (list shown) cera--shown))
+      (let ((overlay (car (cera-shown-overlays shown))))
+        (should (= (overlay-start overlay) 6))
+        (should (string-match-p "a note" (cera-test--shown-text shown))))
+      (goto-char 1)
+      (insert "new\n")
+      (should (= (overlay-start (car (cera-shown-overlays shown))) 10)))))
+
+(ert-deftest cera-pane-update-replaces-what-is-shown ()
+  (with-temp-buffer
+    (insert "alpha\n")
+    (let ((shown (cera-pane-show
+                  (list (cera-pane :id 'note :kind 'readonly :text "before"))
+                  1)))
+      (cera-pane-update shown (list (cera-pane :id 'note :kind 'readonly
+                                               :text "after")))
+      (should (= 1 (length (cera-shown-overlays shown))))
+      (should (string-match-p "after" (cera-test--shown-text shown)))
+      (should-not (string-match-p "before" (cera-test--shown-text shown))))))
+
+(ert-deftest cera-pane-remove-takes-the-panes-and-the-hooks-away ()
+  (with-temp-buffer
+    (insert "alpha\n")
+    (let ((shown (cera-pane-show
+                  (list (cera-pane :id 'note :kind 'readonly :text "a note"))
+                  1)))
+      (should (memq #'cera--reflow-shown window-size-change-functions))
+      (cera-pane-remove shown)
+      (should-not cera--shown)
+      (should-not (cera-shown-overlays shown))
+      (should-not (seq-some (lambda (o) (overlay-get o 'before-string))
+                            (overlays-in (point-min) (point-max))))
+      (should-not (memq #'cera--reflow-shown window-size-change-functions)))))
+
+(ert-deftest cera-pane-show-at-the-end-of-a-buffer-without-a-newline ()
+  (with-temp-buffer
+    (insert "alpha")
+    (let ((shown (cera-pane-show
+                  (list (cera-pane :id 'note :kind 'readonly :text "a note"))
+                  3)))
+      (should (= (overlay-start (car (cera-shown-overlays shown))) (point-max)))
+      (should (string-prefix-p "\n" (cera-test--shown-text shown))))))
+
+(ert-deftest cera-shown-panes-outlive-a-field-read-over-them ()
+  "Opening and closing a field leaves the panes shown outside it alone."
+  (with-temp-buffer
+    (insert "alpha\nbeta\n")
+    (let ((shown (cera-pane-show
+                  (list (cera-pane :id 'note :kind 'readonly :text "a note"))
+                  1)))
+      (goto-char 1)
+      (cera-test--reading
+          (lambda () (insert "written") (cera-accept))
+        (should (equal (cera-read nil "") "written")))
+      (should (overlay-buffer (car (cera-shown-overlays shown))))
+      (should (string-match-p "a note" (cera-test--shown-text shown))))))
+
+(ert-deftest cera-shown-panes-reflow-when-a-window-changes-width ()
+  (with-temp-buffer
+    (insert "alpha\n")
+    (let* ((widths '((nil . 80)))
+           (shown (cl-letf (((symbol-function 'cera--display-widths)
+                             (lambda () widths)))
+                    (cera-pane-show
+                     (list (cera-pane :id 'note :kind 'readonly
+                                      :text "one two three four five six"))
+                     1)))
+           (wide (cera-test--shown-text shown)))
+      (setq widths '((nil . 16)))
+      (cl-letf (((symbol-function 'cera--display-widths) (lambda () widths)))
+        (cera--reflow-shown))
+      (should (> (cl-count ?\n (cera-test--shown-text shown))
+                 (cl-count ?\n wide))))))

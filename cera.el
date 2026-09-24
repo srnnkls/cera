@@ -147,6 +147,12 @@ the struct is, so the text it wants a pane opened with is set here."
   (setf (cera-pane-text pane) text)
   pane)
 
+(cl-defstruct (cera-shown (:constructor cera--make-shown) (:copier nil))
+  "Read-only PANES shown in BUFFER under the line ANCHOR is on.
+OVERLAYS draw them, one per window, laid out for the WIDTHS those
+windows had when they were drawn."
+  buffer anchor panes overlays widths)
+
 (defvar cera-read-context-function nil
   "Optional function transforming the normalized panes of `cera-read'.
 Called with PANES and returning PANES, before any document changes.")
@@ -234,16 +240,18 @@ SESSION defaults to the reader active in this buffer."
 
 ;;;; Drawing
 
-(defun cera--overlay (session begin end &rest properties)
-  "Decorate BEGIN through END with PROPERTIES owned by SESSION."
+(defun cera--overlay (owner begin end &rest properties)
+  "Decorate BEGIN through END with PROPERTIES owned by OWNER.
+OWNER is a field's session or panes shown outside one."
   (let ((overlay (make-overlay begin end nil nil t)))
     (overlay-put overlay 'priority 1001)
     (overlay-put overlay 'cera t)
     (while properties
       (overlay-put overlay (pop properties) (pop properties)))
-    (if cera--drawing-static
-        (push overlay (cera--session-static-overlays session))
-      (push overlay (cera--session-overlays session)))
+    (cond
+     ((cera-shown-p owner) (push overlay (cera-shown-overlays owner)))
+     (cera--drawing-static (push overlay (cera--session-static-overlays owner)))
+     (t (push overlay (cera--session-overlays owner))))
     overlay))
 
 (defconst cera--bracket-first
@@ -587,8 +595,10 @@ every row the pane shows starts behind it as they do."
             (cons window (window-body-width (or window (selected-window)))))
           (or (get-buffer-window-list (current-buffer) nil t) '(nil))))
 
-(defun cera--draw-virtual (session panes anchor &optional opening)
-  "Display SESSION's virtual PANES in order at ANCHOR in each window.
+(defun cera--draw-virtual (owner panes anchor widths aligned &optional opening)
+  "Display OWNER's virtual PANES in order at ANCHOR in each window.
+WIDTHS pairs each window with the columns it shows, and ALIGNED is the
+prefix the lines beside the panes are drawn behind.
 A line carries its `line-prefix' at its start, so an ANCHOR opening one
 would draw that line's bracket over the panes.  The overlay is put at the
 end of the line above instead, where the panes fill lines of their own.
@@ -598,16 +608,15 @@ carries its bracket, drawn after the panes and before the line's text."
                          (save-excursion (goto-char anchor) (bolp)))
                     (1- anchor)
                   anchor)))
-    (dolist (geometry (cera--session-width session))
+    (dolist (geometry widths)
       (let* ((text (concat (unless (save-excursion (goto-char origin) (bolp)) "\n")
                            (mapconcat (lambda (pane)
                                         (cera--virtual-text
-                                         pane (cdr geometry)
-                                         (cera--session-aligned session)))
+                                         pane (cdr geometry) aligned))
                                       panes "")
                            opening))
              (closing (cera--closing-newline text origin))
-             (overlay (cera--overlay session origin (if closing (1+ origin) origin)
+             (overlay (cera--overlay owner origin (if closing (1+ origin) origin)
                                      'window (car geometry)
                                      'before-string
                                      (if closing
@@ -683,11 +692,15 @@ which the first line of a buffer has not got."
                                        'cera-source-mark t))
                       (goto-char (min (cdr bounds) (1+ end))))))))
             (when pending
-              (cera--draw-virtual session (nreverse pending) start opening)
+              (cera--draw-virtual session (nreverse pending) start
+                                  (cera--session-width session)
+                                  (cera--session-aligned session) opening)
               (setq pending nil)))
         (push pane pending)))
     (when pending
-      (cera--draw-virtual session (nreverse pending) tail))))
+      (cera--draw-virtual session (nreverse pending) tail
+                          (cera--session-width session)
+                          (cera--session-aligned session)))))
 
 (defun cera--draw ()
   "Refresh only the writable pane's brackets and block face."
@@ -733,6 +746,72 @@ undo and completion are not changed.  Empty TEXT hides the pane."
       (setf (cera-pane-text pane) (cera--copy-content text))
       (cera--draw-static cera--active)
       t))))
+
+
+;;;; Panes shown outside a field
+
+(defvar-local cera--shown nil
+  "Panes shown in this buffer outside a field.")
+
+(defun cera-pane-show (panes position)
+  "Show read-only PANES under the line POSITION is on, and return them.
+PANES are `cera-pane' descriptors with supplied text, drawn the way a
+field draws its read-only panes, in list order.  They stay without a
+field open until `cera-pane-remove', move with the line as the text
+around it is edited, and are laid out again when a window showing them
+changes width.  `cera-pane-update' replaces what they show."
+  (let ((shown (cera--make-shown :buffer (current-buffer)
+                                 :anchor (copy-marker position)
+                                 :panes panes)))
+    (unless cera--shown
+      (add-hook 'window-size-change-functions #'cera--reflow-shown nil t)
+      (add-hook 'window-configuration-change-hook #'cera--reflow-shown nil t))
+    (push shown cera--shown)
+    (cera--draw-shown shown)
+    shown))
+
+(defun cera-pane-update (shown panes)
+  "Show PANES in place of what SHOWN shows, and return SHOWN."
+  (setf (cera-shown-panes shown) panes)
+  (cera--draw-shown shown)
+  shown)
+
+(defun cera-pane-remove (shown)
+  "Take the panes of SHOWN off the display."
+  (mapc #'delete-overlay (cera-shown-overlays shown))
+  (setf (cera-shown-overlays shown) nil)
+  (set-marker (cera-shown-anchor shown) nil)
+  (when (buffer-live-p (cera-shown-buffer shown))
+    (with-current-buffer (cera-shown-buffer shown)
+      (setq cera--shown (delq shown cera--shown))
+      (unless cera--shown
+        (remove-hook 'window-size-change-functions #'cera--reflow-shown t)
+        (remove-hook 'window-configuration-change-hook #'cera--reflow-shown t)))))
+
+(defun cera--draw-shown (shown)
+  "Draw the panes of SHOWN under the line its anchor is on."
+  (with-current-buffer (cera-shown-buffer shown)
+    (mapc #'delete-overlay (cera-shown-overlays shown))
+    (setf (cera-shown-overlays shown) nil
+          (cera-shown-widths shown) (cera--display-widths))
+    (save-excursion
+      (save-restriction
+        (widen)
+        (goto-char (cera-shown-anchor shown))
+        (cera--draw-virtual
+         shown (cl-remove-if-not #'cera--pane-visible-p (cera-shown-panes shown))
+         (min (point-max) (1+ (line-end-position)))
+         (cera-shown-widths shown)
+         (cera--prefix-text (get-char-property (line-beginning-position)
+                                               'line-prefix)))))))
+
+(defun cera--reflow-shown (&optional window)
+  "Lay the shown panes of WINDOW's buffer out again for its new width."
+  (with-current-buffer (if (windowp window) (window-buffer window) (current-buffer))
+    (let ((widths (cera--display-widths)))
+      (dolist (shown cera--shown)
+        (unless (equal widths (cera-shown-widths shown))
+          (cera--draw-shown shown))))))
 
 
 ;;;; Completion
