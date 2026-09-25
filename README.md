@@ -1,6 +1,10 @@
 # cera
 
-Write into a temporary field in another buffer.
+*cēra • wax, a wax writing tablet*
+
+> From Latin *cēra* ("wax"), and the wax tablet a note was scratched into and smoothed away
+>
+> Pronunciation: /ˈkeː.ra/
 
 ## About
 
@@ -27,15 +31,18 @@ messages and inbox notes in cera fields.
 
 ## Installation
 
-cera needs Emacs 29.1 or newer. Clone the repository and put it on your `load-path`:
+cera needs Emacs 29.1 or newer. On Emacs 30 or newer, install it with `use-package`:
 
-```sh
-git clone https://github.com/srnnkls/cera.git ~/.emacs.d/site-lisp/cera
+```elisp
+(use-package cera
+  :vc (:url "https://github.com/srnnkls/cera" :rev :newest))
 ```
 
-```emacs-lisp
-(add-to-list 'load-path "~/.emacs.d/site-lisp/cera")
-(require 'cera)
+On Emacs 29, run `M-x package-vc-install RET https://github.com/srnnkls/cera RET`. On Doom Emacs,
+add this to `packages.el`:
+
+```elisp
+(package! cera :recipe (:host github :repo "srnnkls/cera"))
 ```
 
 Two optional integrations load on request:
