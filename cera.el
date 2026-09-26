@@ -1141,7 +1141,8 @@ mode carries it from a parent map alone."
                  completion-in-region-mode-hook cera-completion-space
                  cera-input-prefix cera-input-prefix-width cera-indent
                  cera-space-below emulation-mode-map-alists minor-mode-overriding-map-alist
-                 font-lock-fontify-region-function global-hl-line-mode)
+                 font-lock-fontify-region-function global-hl-line-mode
+                 global-hl-line-buffers)
   "Buffer-local settings the field reader borrows.
 A consumer arranges for its own through `cera-borrowed-locals'.")
 
@@ -1388,16 +1389,20 @@ would otherwise colour it as whatever language surrounds it."
 
 (declare-function hl-line-mode "hl-line" (&optional arg))
 (declare-function global-hl-line-unhighlight "hl-line" ())
+(defvar global-hl-line-buffers)
 
 (defun cera--hold-off-hl-line (session)
   "Take the current line's highlight off SESSION's buffer while it is open.
 The highlight is drawn over the field's own face; it comes back with
-the rest of the buffer's settings."
+the rest of the buffer's settings.  The global mode's highlight kept
+per window, which `global-hl-line-sticky-flag' `window' draws, asks
+only `global-hl-line-buffers' whether a buffer takes it."
   (when (bound-and-true-p hl-line-mode)
     (setf (cera--session-hl-line session) t)
     (hl-line-mode -1))
   (when (bound-and-true-p global-hl-line-mode)
-    (setq-local global-hl-line-mode nil)
+    (setq-local global-hl-line-mode nil
+                global-hl-line-buffers nil)
     (global-hl-line-unhighlight)))
 
 (defun cera--setup (session)

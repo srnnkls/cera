@@ -598,6 +598,7 @@ redisplay runs this hook crashes the macOS port mid input-method switch."
 (defconst cera-frame--parent-locals
   '(cera--active cera--field-buffer cera-frame--field
                  cursor-in-non-selected-windows global-hl-line-mode
+                 global-hl-line-buffers
                  kill-buffer-hook pre-redisplay-functions window-scroll-functions
                  window-size-change-functions window-configuration-change-hook
                  cera-update-pane-functions)

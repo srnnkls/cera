@@ -138,7 +138,19 @@ long field costs what a keystroke in a short one does."
 	    (cera-accept))
 	(cera-read nil "note"))
       (should global-hl-line-mode)
-      (should-not (local-variable-p 'global-hl-line-mode)))))
+      (should-not (local-variable-p 'global-hl-line-mode))))
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (goto-char 2)
+    (let ((global-hl-line-mode t)
+          (global-hl-line-buffers t))
+      (cera-test--reading
+	  (lambda ()
+	    (should-not (buffer-match-p global-hl-line-buffers (current-buffer)))
+	    (cera-accept))
+	(cera-read nil "note"))
+      (should (buffer-match-p global-hl-line-buffers (current-buffer)))
+      (should-not (local-variable-p 'global-hl-line-buffers)))))
 
 (ert-deftest cera-keeps-the-point-a-buffer-puts-back-where-it-wants-it ()
   "A buffer holding the point after every command does not hold the field's.
