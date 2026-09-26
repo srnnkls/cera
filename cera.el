@@ -20,6 +20,7 @@
 
 (require 'cl-lib)
 (require 'color)
+(require 'face-remap)
 (require 'org-faces)
 (require 'subr-x)
 (require 'text-mode)
@@ -1444,6 +1445,9 @@ would otherwise colour it as whatever language surrounds it."
 (declare-function global-hl-line-unhighlight "hl-line" ())
 (defvar global-hl-line-buffers)
 
+(defvar-local cera--line-number-remap nil
+  "The remapping holding the current line number's highlight off, or nil.")
+
 (defun cera--hold-off-hl-line (session)
   "Take the current line's highlight off SESSION's buffer while it is open.
 The highlight is drawn over the field's own face; it comes back with
@@ -1453,10 +1457,32 @@ only `global-hl-line-buffers' whether a buffer takes it."
   (when (bound-and-true-p hl-line-mode)
     (setf (cera--session-hl-line session) t)
     (hl-line-mode -1))
-  (when (bound-and-true-p global-hl-line-mode)
+  ;; Toggling the buffer's own mode leaves the global one off here as a
+  ;; local, which the highlight kept per window does not read.
+  (when (featurep 'hl-line)
     (setq-local global-hl-line-mode nil
                 global-hl-line-buffers nil)
-    (global-hl-line-unhighlight)))
+    (global-hl-line-unhighlight)
+    (dolist (window (get-buffer-window-list nil nil t))
+      (when-let* ((overlay (window-parameter window 'hl-line-overlay)))
+        (delete-overlay overlay))))
+  ;; A theme's current line number often wears the highlight too, and the
+  ;; bracket drawn beside it takes that background.
+  (setq cera--line-number-remap
+        (face-remap-add-relative
+         'line-number-current-line
+         :inherit 'line-number
+         :foreground (or (cera--remapped 'line-number :foreground)
+                         (face-foreground 'line-number nil 'default))
+         :background (or (cera--remapped 'line-number :background)
+                         (cera--background)))))
+
+(defun cera--restore-hl-line (session)
+  "Put back the current line's highlight SESSION held off in this buffer."
+  (when cera--line-number-remap
+    (face-remap-remove-relative cera--line-number-remap)
+    (kill-local-variable 'cera--line-number-remap))
+  (when (cera--session-hl-line session) (hl-line-mode 1)))
 
 (defun cera--setup (session)
   "Install SESSION's input guard, completion, and modal key bindings."
@@ -1537,7 +1563,7 @@ Closing a session already closed does nothing."
             (when-let* ((group (cera--session-group session)))
               (cancel-change-group group)))
         (cera--restore-locals (cera--session-bindings session))
-        (when (cera--session-hl-line session) (hl-line-mode 1))
+        (cera--restore-hl-line session)
         (cera--restore-base session)
         (set-buffer-modified-p (cera--session-modified session))
         (dolist (pane (cera--session-panes session))

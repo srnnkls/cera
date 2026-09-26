@@ -125,9 +125,11 @@ long field costs what a keystroke in a short one does."
     (cera-test--reading
 	(lambda ()
 	  (should-not hl-line-mode)
+	  (should (assq 'line-number-current-line face-remapping-alist))
 	  (cera-accept))
       (cera-read nil "note"))
-    (should hl-line-mode))
+    (should hl-line-mode)
+    (should-not (assq 'line-number-current-line face-remapping-alist)))
   (with-temp-buffer
     (insert "alpha\nnext\n")
     (goto-char 2)
@@ -139,18 +141,21 @@ long field costs what a keystroke in a short one does."
 	(cera-read nil "note"))
       (should global-hl-line-mode)
       (should-not (local-variable-p 'global-hl-line-mode))))
-  (with-temp-buffer
-    (insert "alpha\nnext\n")
-    (goto-char 2)
-    (let ((global-hl-line-mode t)
-          (global-hl-line-buffers t))
-      (cera-test--reading
-	  (lambda ()
-	    (should-not (buffer-match-p global-hl-line-buffers (current-buffer)))
-	    (cera-accept))
-	(cera-read nil "note"))
-      (should (buffer-match-p global-hl-line-buffers (current-buffer)))
-      (should-not (local-variable-p 'global-hl-line-buffers)))))
+  ;; Toggling the buffer's own mode leaves the global one off as a local.
+  (dolist (left-off '(nil t))
+    (with-temp-buffer
+      (insert "alpha\nnext\n")
+      (goto-char 2)
+      (let ((global-hl-line-mode t)
+            (global-hl-line-buffers t))
+        (when left-off (setq-local global-hl-line-mode nil))
+        (cera-test--reading
+	    (lambda ()
+	      (should-not (buffer-match-p global-hl-line-buffers (current-buffer)))
+	      (cera-accept))
+	  (cera-read nil "note"))
+        (should (buffer-match-p global-hl-line-buffers (current-buffer)))
+        (should-not (local-variable-p 'global-hl-line-buffers))))))
 
 (ert-deftest cera-reads-colours-through-the-buffer-s-face-remapping ()
   "A buffer remapping its faces shows those colours, and the field follows them."

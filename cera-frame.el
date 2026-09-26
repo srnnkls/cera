@@ -710,7 +710,7 @@ redisplay runs this hook crashes the macOS port mid input-method switch."
         (mapc #'delete-overlay (cera--session-static-overlays session))
         (mapc #'delete-overlay (cera--session-overlays session))
         (cera--restore-bindings (cera-frame--field-bindings field))
-        (when (cera--session-hl-line session) (hl-line-mode 1))))
+        (cera--restore-hl-line session)))
     (when (window-live-p window)
       (save-current-buffer
         (select-frame-set-input-focus (window-frame window))
