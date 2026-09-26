@@ -267,6 +267,7 @@ Customization group `cera`.
 | `cera-input-prefix-width` | natural number | 2 | columns kept for the prefix, however wide it is drawn; a wider prefix pushes the bracket along |
 | `cera-indent` | natural number or function | 0 | column the bracket is drawn at, counted from the window's text area; the leading whitespace of bracketed lines is hidden |
 | `cera-body-shade` | natural number | 6 | percent of the theme's foreground mixed into the field's background: darker on a light theme, lighter on a dark one |
+| `cera-input-max-width` | natural number or nil | 80 | columns of text the input's box takes, reaching at the least as far as the widest supplied pane stacked with it; a child frame wraps the input there, the buffer runs a longer line on to the window's edge; nil boxes it to the window's edge |
 | `cera-space-below` | natural number | 0 | pixels left empty under the input |
 | `cera-completion-function` | function | `cera-complete-with-table` | see [Completion](#completion) |
 | `cera-completion-space` | natural number or function | 0 | lines kept free under the field while completion is active; a function of no arguments returns the number |
@@ -317,7 +318,6 @@ in the buffer instead. [GUIDE.md](GUIDE.md#the-child-frame-backend) describes th
 | `cera-frame-host-modifiers` | option | `(super)` | modifiers, from `super`, `hyper` and `alt`, whose global bindings run from the window the field is read over; a binding `delete-selection-mode` marks as inserting text still writes into the field |
 | `cera-frame-scroll-parent` | option | nil | non-nil makes the scroll-other-window commands scroll the window the field is read over |
 | `cera-frame-parameters` | option | `((persp-ignore-wconf . t))` | extra parameters for the child frame; they take precedence over cera's own |
-| `cera-frame-input-max-width` | option | 80 | columns the input's text takes before it wraps, and where its face ends; it still reaches as far as the widest supplied pane stacked with it; nil runs to the window's edge |
 
 The input's buffer takes these values from the buffer the field is opened for:
 `cera-input-prefix`, `cera-input-prefix-width`, `cera-indent`, `cera-completion-space`,

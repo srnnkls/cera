@@ -49,12 +49,6 @@ the field."
   :type '(repeat (choice (const super) (const hyper) (const alt)))
   :group 'cera)
 
-(defcustom cera-frame-input-max-width 80
-  "Columns the input's text takes at most before it wraps, or nil for no cap.
-The field's face ends there too, rather than at the window's edge."
-  :type '(choice (const :tag "Window's edge" nil) natnum)
-  :group 'cera)
-
 (defcustom cera-frame-parameters '((persp-ignore-wconf . t))
   "Extra parameters put on the child frame the input is written in.
 They tell the workspace managers that keep a layout per frame to leave
@@ -220,6 +214,7 @@ it, so a command acting on the host alone never moves it."
       (setq-local cera-frame--field field
                   cera--origin-buffer parent
                   cera-space-below 0
+                  cera-input-max-width nil
                   display-buffer-overriding-action
                   '(cera-frame--display-through-parent)
                   other-window-scroll-default
@@ -470,20 +465,13 @@ it."
   "Return the column the widest supplied pane stacked with FIELD's input ends at.
 WIDTH is the columns of the window the panes are drawn in."
   (let ((cera-input-prefix
-         (cera--input-prefix-of (cera-frame--field-session field)))
-        (panes (append (cera--session-panes (cera-frame--field-session field))
-                       (cera-frame--field-under field))))
-    (apply #'max 0
-           (mapcar (lambda (pane) (cera--pane-reach pane width))
-                   (cl-remove-if-not
-                    (lambda (pane)
-                      (and (eq (cera-pane-kind pane) 'readonly)
-                           (not (cera-pane-bounds pane))
-                           (cera--pane-visible-p pane)))
-                    panes)))))
+         (cera--input-prefix-of (cera-frame--field-session field))))
+    (cera--stacked-reach (append (cera--session-panes (cera-frame--field-session field))
+                                 (cera-frame--field-under field))
+                         width)))
 
 (defun cera-frame--cap-width (field)
-  "Narrow FIELD's window to `cera-frame-input-max-width' columns of input.
+  "Narrow FIELD's window to `cera-input-max-width' columns of input.
 The input still reaches as far as the widest pane stacked with it.  The
 rest of the window is given to its right margin."
   (let* ((view (frame-root-window (cera-frame--field-frame field)))
@@ -491,14 +479,17 @@ rest of the window is given to its right margin."
          (window (cera-frame--field-window field))
          (margin
           (with-current-buffer (cera-frame--field-child field)
-            (if (not cera-frame-input-max-width)
+            (if (not (buffer-local-value 'cera-input-max-width
+                                         (cera-frame--field-parent field)))
                 0
               (let* ((cera-input-prefix
                       (cera--input-prefix-of (cera-frame--field-session field)))
                      (reach (+ (string-pixel-width (cera-frame--field-aligned field))
                                (* column
                                   (max (+ (cera--text-column)
-                                          cera-frame-input-max-width)
+                                          (buffer-local-value
+                                           'cera-input-max-width
+                                           (cera-frame--field-parent field)))
                                        (cera-frame--stacked-reach
                                         field (window-body-width window))))))
                      (area (- (window-pixel-width view)

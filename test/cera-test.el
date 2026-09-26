@@ -1243,9 +1243,13 @@ that completes on its own."
               (should (string-match-p
                        "╰" (get-char-property begin 'line-prefix))))
             (insert "\nsecond")
+            (cera--draw)
+            (insert "x")
             (let ((short (cera-test--draw-allocations))
                   (static (cera--session-static-overlays cera--active)))
               (dotimes (_ 100) (insert "\nanother row"))
+              (cera--draw)
+              (insert "x")
               (should (= short (cera-test--draw-allocations)))
               (should (eq static (cera--session-static-overlays cera--active))))
             (cera-accept))
@@ -1445,18 +1449,27 @@ stays on the input's row, and the panes stay under whatever is typed."
             (cl-flet ((holder ()
                         (cl-find-if (lambda (overlay) (overlay-get overlay 'display))
                                     (overlays-in (point-min) (point-max)))))
-              (let ((shown (overlay-get (holder) 'display)))
+              (let* ((shown (overlay-get (holder) 'display))
+                     (newline (string-search "\n" shown)))
                 (should (= (overlay-start (holder)) (cdr (cera--field-bounds))))
-                (should (string-prefix-p " \n" shown))
-                ;; An empty input still shows its box to the window's edge.
-                (should (get-text-property 1 'face shown))
+                (should (string-match-p "\\` +\n" shown))
+                ;; An empty input still shows its box, which ends short of the
+                ;; window's edge.
+                (should (get-text-property 0 'face shown))
+                (should (equal (get-text-property newline 'face shown)
+                               (cera--pane-face)))
                 ;; A string replacing text is drawn without its aligning spaces.
-                (should-not (text-property-not-all 2 (length shown) 'display nil
+                (should-not (text-property-not-all newline (length shown) 'display nil
                                                    shown))
                 (should (string-match-p "status" shown))
                 ;; The panes stand on the buffer's ground, not the input's shade.
                 (should (get-text-property (string-search "status" shown) 'face shown)))
-              (insert "typed")
+              (let ((pad (string-search "\n" (overlay-get (holder) 'display))))
+                (insert "typed")
+                (cera--draw)
+                ;; The box keeps its edge as the line grows into it.
+                (should (= (string-search "\n" (overlay-get (holder) 'display))
+                           (- pad (length "typed")))))
               (should (= (overlay-start (holder)) (cdr (cera--field-bounds))))
               (should (equal (cera-test--input) "typed")))
             (cera-accept))
@@ -1476,7 +1489,8 @@ the panes are drawn again."
             (cera-update-pane 'status "status")
             (let* ((shown (cl-some (lambda (overlay) (overlay-get overlay 'display))
                                    (overlays-in (point-min) (point-max))))
-                   (lead (substring shown 2 (string-search "status" shown))))
+                   (lead (substring shown (1+ (string-search "\n" shown))
+                                    (string-search "status" shown))))
               (should (equal lead (make-string (+ (cera--indent)
                                                   cera-bracket-width
                                                   cera-input-prefix-width
@@ -1489,6 +1503,38 @@ the panes are drawn again."
                (cera-pane :id 'status :kind 'readonly :text "" :bracket nil
                           :align 'input))
          nil)))))
+
+(ert-deftest cera-numbers-the-lines-below-as-the-buffer-had-them ()
+  "The lines after an open field carry the numbers they had before it.
+Its own lines push the native numbers along; they come back with it."
+  (save-window-excursion
+    (with-temp-buffer
+      (insert "one\ntwo\nthree\nfour\n")
+      (goto-char 2)
+      (set-window-buffer (selected-window) (current-buffer))
+      (setq-local display-line-numbers t)
+      (let ((cera-input-backend 'buffer))
+        (cera-test--reading
+            (lambda ()
+              (cera--number-below (selected-window))
+              (let ((numbers (cera--session-numbers cera--active)))
+                (should numbers)
+                (dolist (overlay numbers)
+                  (should (overlay-get overlay 'display-line-numbers-disable))
+                  (should (> (overlay-start overlay) (cdr (cera--field-bounds)))))
+                (let ((after (cl-find (save-excursion
+                                        (goto-char (cdr (cera--field-bounds)))
+                                        (forward-line 1)
+                                        (point))
+                                      numbers :key #'overlay-start)))
+                  (should (string-match-p "\\` *2 \\'"
+                                          (substring-no-properties
+                                           (overlay-get after 'line-prefix))))))
+              (cera-accept))
+          (cera-read nil "note\nmore")))
+      (should-not (cl-some (lambda (overlay) (overlay-get overlay 'display-line-numbers-disable))
+                           (overlays-in (point-min) (point-max))))
+      (should-not (memq #'cera--number-below pre-redisplay-functions)))))
 
 (ert-deftest cera-a-pane-may-start-where-the-input-s-text-does ()
   "An unbracketed pane aligned to the input is held off past its bracket and prefix."

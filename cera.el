@@ -87,6 +87,14 @@ number instead, so a frontend that sometimes draws above the field can
 ask for nothing when it is about to."
   :type '(choice natnum function))
 
+(defcustom cera-input-max-width 80
+  "Columns the input's text is boxed in at most, or nil for the window's edge.
+The field's face ends there, and reaches at the least as far as the
+widest pane stacked with the input.  In a child frame the input wraps
+there too; in the buffer a line longer than that runs on to the
+window's edge."
+  :type '(choice (const :tag "Window's edge" nil) natnum))
+
 (defcustom cera-space-below 0
   "Pixels left empty below the input, between it and the text that follows.
 Room held for completion comes below them."
@@ -125,7 +133,8 @@ its own.")
 (cl-defstruct (cera--session (:constructor cera--make-session))
   buffer begin end origin tail table overlays spacer source-face accepted
   group bindings base-bindings modified depth closed
-  panes input static-overlays keymap width aligned hl-line)
+  panes input static-overlays keymap width aligned hl-line numbers numbered
+  after lines)
 
 (cl-defstruct (cera-pane (:constructor cera-pane))
   "A pane with ID, KIND, TEXT or BOUNDS, BRACKET, PREFIX and FACE.
@@ -820,39 +829,170 @@ Panes aligned to the input measure its column by this, not by
                                   (cera--session-aligned session) opening)
               (setq pending nil)))
         (push pane pending)))
-    (when pending
-      (if (and (eq tail (cera--session-tail session))
-               (cera--session-end session))
-          (cera--draw-after-input session (nreverse pending))
+    (if (and (eq tail (cera--session-tail session))
+             (cera--session-end session))
+        (cera--draw-after-input session (nreverse pending))
+      (when pending
         (cera--draw-virtual session (nreverse pending) tail
                             (cera--session-width session)
-                            (cera--session-aligned session))))))
+                            (cera--session-aligned session)))
+      (when (cera--session-end session)
+        (cera--draw-after-input session nil)))))
 
 (defun cera--draw-after-input (session panes)
-  "Display SESSION's PANES as the newline closing its input.
+  "Keep SESSION's PANES to be drawn with the newline closing its input.
 The point stands on that newline at the end of the input, and text drawn
 before it would take the cursor, and where the point is reported to be,
-past the panes.  The panes drawn in place of that newline, after a
-space the cursor can stand on, keep both at the end of the input.  A
-string replacing text is drawn without the spaces aligning it, so the
-panes are held off by plain columns, as many as what the input's lines
-are drawn behind measures."
-  (let* ((end (cera--session-end session))
-         (behind (concat (cera--line-number-pad) (cera--session-aligned session)))
-         (aligned (make-string (round (string-pixel-width behind) (default-font-width))
-                               ?\s))
-         (body (or (cera-pane-face (cera--session-input session)) (cera--body-face)))
-         (cera--plain-columns t)
-         (cera--before-insertions t))
+past the panes.  Drawn in place of that newline, after the space the
+cursor stands on, they keep both at the end of the input.  A string
+replacing text is drawn without the spaces aligning it, so the panes
+are held off by plain columns, as many as what the input's lines are
+drawn behind measures."
+  (let ((aligned (make-string (cera--behind-columns session) ?\s))
+        (cera--plain-columns t))
+    (setf (cera--session-after session)
+          (and panes
+               (mapcar (lambda (geometry)
+                         (cons (car geometry)
+                               (cera--own-face
+                                (mapconcat (lambda (pane)
+                                             (cera--virtual-text
+                                              pane (cdr geometry) aligned))
+                                           panes ""))))
+                       (cera--session-width session))))
+    (cera--draw-newlines session)))
+
+(defun cera--behind-columns (session)
+  "Return the columns SESSION's input lines are drawn behind, before the bracket."
+  (round (string-pixel-width (concat (cera--line-number-pad)
+                                     (cera--session-aligned session)))
+         (default-font-width)))
+
+(defun cera--stacked-reach (panes width)
+  "Return the column the widest supplied pane of PANES ends at, in WIDTH columns."
+  (apply #'max 0
+         (mapcar (lambda (pane) (cera--pane-reach pane width))
+                 (cl-remove-if-not (lambda (pane)
+                                     (and (eq (cera-pane-kind pane) 'readonly)
+                                          (not (cera-pane-bounds pane))
+                                          (cera--pane-visible-p pane)))
+                                   panes))))
+
+(defun cera--box-width (session columns)
+  "Return the columns SESSION's input is boxed in, in a window of COLUMNS, or nil.
+The box takes `cera-input-max-width' columns of text and reaches at the
+least as far as the widest pane stacked with the input, within the window."
+  (when cera-input-max-width
+    (min (max cera-input-max-width
+              (- (cera--stacked-reach (cera--session-panes session) columns)
+                 (cera--text-column)))
+         (- columns (cera--behind-columns session) (cera--text-column) 1))))
+
+(defun cera--draw-newlines (session)
+  "Draw the newlines of SESSION's input as the edge of the box it is set in.
+Each is drawn as the face's run to the box's width, plain spaces a
+string replacing text keeps, then a newline in the buffer's own face,
+which a string takes from the text it replaces where it names none; the
+last is followed by the panes after the input.  Without a box
+the face runs to the window's edge, and only the last newline is drawn,
+for the panes and the cursor.  The overlays drawn before are moved
+rather than made again, so a redraw makes one only for a line new since."
+  (let ((pool (cera--session-lines session))
+        (begin (cera--session-begin session))
+        (end (cera--session-end session))
+        (body (or (cera-pane-face (cera--session-input session)) (cera--body-face)))
+        (cera-input-prefix (cera--input-prefix-of session)))
     (dolist (geometry (cera--session-width session))
-      (cera--overlay session end (1+ end)
-                     'window (car geometry)
-                     'display
-                     (concat (propertize " \n" 'face body)
-                             (cera--own-face
-                              (mapconcat (lambda (pane)
-                                           (cera--virtual-text pane (cdr geometry) aligned))
-                                         panes "")))))))
+      (let ((box (cera--box-width session (cdr geometry)))
+            (room (max 1 (- (cdr geometry) (cera--behind-columns session)
+                            (cera--text-column) 1)))
+            (after (alist-get (car geometry) (cera--session-after session))))
+        (save-excursion
+          (goto-char begin)
+          (while (<= (point) end)
+            (let* ((start (point))
+                   (newline (min end (line-end-position)))
+                   (last (= newline end))
+                   (width (string-width (buffer-substring-no-properties start newline)))
+                   (row (if (<= width room) width (mod width room))))
+              (when (or box last)
+                (let ((overlay (if pool
+                                   (move-overlay (pop pool) newline (1+ newline))
+                                 (let ((made (make-overlay newline (1+ newline) nil t t)))
+                                   (overlay-put made 'cera t)
+                                   (overlay-put made 'priority 1001)
+                                   (overlay-put made 'evaporate t)
+                                   (push made (cera--session-lines session))
+                                   made))))
+                  (overlay-put overlay 'window (car geometry))
+                  (overlay-put overlay 'display
+                               (concat (propertize
+                                        (make-string (if box (max 1 (- box row)) 1) ?\s)
+                                        'face body)
+                                       (propertize "\n" 'face (if box
+                                                                  (cera--pane-face)
+                                                                body))
+                                       (and last after)))))
+              (goto-char (1+ newline)))))))
+    (dolist (overlay pool)
+      (delete-overlay overlay))
+    (setf (cera--session-lines session)
+          (cl-set-difference (cera--session-lines session) pool))))
+
+(defun cera--lines-put-in (session)
+  "Return the lines SESSION's field put into its buffer."
+  (count-lines (cera--session-begin session) (cera--session-tail session)))
+
+(defun cera--number-window (session window)
+  "Number the lines WINDOW shows below SESSION's field as the buffer had them.
+The field's lines push the native numbers of every line after it along,
+so those lines carry the numbers they had before it opened instead."
+  (let ((offset (cera--lines-put-in session))
+        (number (format " %%%dd " (line-number-display-width)))
+        (gutter (propertize " " 'display
+                            `(space :width (,(line-number-display-width t))))))
+    (save-excursion
+      (goto-char (max (cera--session-tail session) (window-start window)))
+      (unless (bolp) (forward-line 1))
+      (dotimes (_ (window-body-height window))
+        (when (< (point) (point-max))
+          (let ((prefix (get-char-property (point) 'line-prefix window))
+                (wrap (get-char-property (point) 'wrap-prefix window))
+                (overlay (make-overlay (point) (1+ (point)))))
+            (overlay-put overlay 'window window)
+            (overlay-put overlay 'priority 1003)
+            (overlay-put overlay 'display-line-numbers-disable t)
+            (overlay-put overlay 'line-prefix
+                         (concat (propertize (format number
+                                                     (- (line-number-at-pos) offset))
+                                             'face 'line-number)
+                                 (cera--prefix-text prefix)))
+            (overlay-put overlay 'wrap-prefix
+                         (concat gutter (cera--prefix-text wrap)))
+            (push overlay (cera--session-numbers session))))
+        (forward-line 1)))))
+
+(defun cera--number-below (window)
+  "Keep the lines WINDOW shows below the field numbered as the buffer had them.
+Only absolute numbers are corrected, and only where the field's lines
+are in this buffer."
+  (when-let* ((session cera--active)
+              ((not (cera--session-closed session)))
+              ((eq display-line-numbers t))
+              (end (cera--session-end session))
+              ((eq (marker-buffer end) (current-buffer))))
+    (let ((key (list (window-start window) (window-body-height window)
+                     (cera--lines-put-in session) (line-number-display-width)
+                     (cera--session-static-overlays session))))
+      (unless (equal key (alist-get window (cera--session-numbered session)))
+        (setf (cera--session-numbers session)
+              (cl-remove-if (lambda (overlay)
+                              (when (eq (overlay-get overlay 'window) window)
+                                (delete-overlay overlay)
+                                t))
+                            (cera--session-numbers session)))
+        (cera--number-window session window)
+        (setf (alist-get window (cera--session-numbered session)) key)))))
 
 (defun cera--input-pixel ()
   "Return the pixel the input's text starts at, across the window's text area.
@@ -878,6 +1018,8 @@ bracket in front of it, so what is drawn at it asks here instead."
       (setf (cera--session-overlays session) nil)
       (cera--draw-range session (cera--session-input session) begin (1+ end)
                         (concat (cera--line-number-pad) aligned))
+      (when (cera--session-width session)
+        (cera--draw-newlines session))
       (setf (cera--session-spacer session)
             (cera--overlay session end (1+ end) 'after-string space
                            'line-spacing (and (> cera-space-below 0)
@@ -1253,6 +1395,7 @@ mode carries it from a parent map alone."
                  first-change-hook create-lockfiles before-save-hook
                  kill-buffer-hook change-major-mode-hook before-revert-hook
                  pre-command-hook post-command-hook window-size-change-functions
+                 pre-redisplay-functions
                  window-configuration-change-hook
                  truncate-lines truncate-partial-width-windows
                  completion-at-point-functions completion-in-region-function
@@ -1580,6 +1723,7 @@ only `global-hl-line-buffers' whether a buffer takes it."
               (cons 'cera--emulation-map-alist emulation-mode-map-alists))
   (add-hook 'window-size-change-functions #'cera--resize nil t)
   (add-hook 'window-configuration-change-hook #'cera--resize nil t)
+  (add-hook 'pre-redisplay-functions #'cera--number-below nil t)
   (add-hook 'pre-command-hook #'cera--pre-command -90 t)
   (add-hook 'post-command-hook #'cera--post-command 90 t)
   (add-hook 'completion-in-region-mode-hook #'cera--reserve-for-completion nil t)
@@ -1624,6 +1768,8 @@ Closing a session already closed does nothing."
                 (inhibit-modification-hooks t))
             (mapc #'delete-overlay (cera--session-overlays session))
             (mapc #'delete-overlay (cera--session-static-overlays session))
+            (mapc #'delete-overlay (cera--session-numbers session))
+            (mapc #'delete-overlay (cera--session-lines session))
             (when-let* ((group (cera--session-group session)))
               (cancel-change-group group)))
         (cera--restore-locals (cera--session-bindings session))
