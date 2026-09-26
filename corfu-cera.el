@@ -120,6 +120,21 @@ the field, and the popup with it, further down."
             (min corfu-cera-space (ceiling height line)))))
       0))
 
+(defun corfu-cera--at-input (arguments)
+  "Return the popup ARGUMENTS with their position moved onto the input's text.
+A position opening a line of the field is reported at the window's edge
+where nothing of the line's own is drawn there, as at the start of an
+empty field, and the popup would stand left of the point."
+  (let ((position (car arguments)))
+    (if (and (bound-and-true-p cera--active)
+             (posn-point position)
+             (save-excursion (goto-char (posn-point position)) (bolp)))
+        (let ((moved (copy-sequence position))
+              (xy (posn-x-y position)))
+          (setf (nth 2 moved) (cons (max (car xy) (cera--input-pixel)) (cdr xy)))
+          (cons moved (cdr arguments)))
+      arguments)))
+
 (defun corfu-cera--fit (&rest _)
   "Hold room below the field for the popup corfu has just drawn."
   (when (and (bound-and-true-p cera--active)
@@ -157,6 +172,7 @@ back when the field closes."
 
 (advice-add 'corfu--popup-show :around #'corfu-cera--over-parent)
 (advice-add 'corfu--popup-show :after #'corfu-cera--fit)
+(advice-add 'corfu--popup-show :filter-args #'corfu-cera--at-input)
 
 (add-hook 'cera-session-start-hook #'corfu-cera--setup)
 (add-hook 'cera-session-teardown-hook #'corfu-cera--teardown)
@@ -165,6 +181,7 @@ back when the field closes."
   "Remove this adapter's session hooks."
   (advice-remove 'corfu--popup-show #'corfu-cera--over-parent)
   (advice-remove 'corfu--popup-show #'corfu-cera--fit)
+  (advice-remove 'corfu--popup-show #'corfu-cera--at-input)
   (remove-hook 'cera-session-start-hook #'corfu-cera--setup)
   (remove-hook 'cera-session-teardown-hook #'corfu-cera--teardown)
   nil)

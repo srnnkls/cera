@@ -59,6 +59,27 @@
             (should (equal (buffer-string) "source\nnext"))))))))
 
 
+(ert-deftest cera-corfu-popup-stands-where-the-input-starts ()
+  "A popup for the start of an empty field is moved onto the input's text.
+Positions past a line's start are left as the display reports them."
+  (with-temp-buffer
+    (insert "source\nnext\n")
+    (goto-char 2)
+    (let ((cera-input-backend 'buffer))
+      (cera-test--reading
+          (lambda ()
+            (let* ((start (car (cera--field-bounds)))
+                   (at-start (list (selected-window) start '(0 . 16) 0))
+                   (moved (car (corfu-cera--at-input (list at-start 0 8 nil)))))
+              (should (= (car (posn-x-y moved)) (cera--input-pixel)))
+              (should (= (cdr (posn-x-y moved)) 16))
+              (insert "ab")
+              (let ((inside (list (selected-window) (point) '(3 . 16) 0)))
+                (should (eq (car (corfu-cera--at-input (list inside 0 8 nil)))
+                            inside))))
+            (cera-accept))
+        (cera-read nil "")))))
+
 (ert-deftest cera-restores-preexisting-corfu-configuration ()
   "An existing Corfu setup remains enabled with its original local options."
   (skip-unless (featurep 'corfu))
