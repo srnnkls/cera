@@ -131,8 +131,8 @@ On a line indented by four columns:
   ╰ ✎ ─ the input
 ```
 
-The field's background is the theme's own, moved `cera-body-shade` percent darker on a light theme
-and lighter on a dark one. Faces:
+The input's background is the theme's own with `cera-body-shade` percent of its foreground mixed in,
+darker on a light theme and lighter on a dark one. Faces:
 
 - `cera-body` is the field. It inherits `org-block`.
 - `cera-border` is the bracket. It inherits `shadow`.
