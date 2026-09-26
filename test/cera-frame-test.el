@@ -658,5 +658,32 @@ repeating that crashes the macOS port."
       (should (eq focused 'child-frame))
       (should-not (memq #'cera-frame--return window-selection-change-functions)))))
 
+(ert-deftest cera-frame-input-reaches-as-far-as-the-panes-stacked-with-it ()
+  "The widest supplied pane sets how far the input reaches, at the least.
+A pane of the document and one hidden empty take no part in it."
+  (with-temp-buffer
+    (insert "source\n")
+    (let* ((cera-input-prefix nil)
+           (status (cera-pane :id 'status :kind 'readonly :bracket nil
+                              :align 'input :wrap nil
+                              :text (make-string 120 ?s)))
+           (context (cera-pane :id 'context :kind 'readonly :bracket nil
+                               :text "short"))
+           (hidden (cera-pane :id 'hidden :kind 'readonly :text ""))
+           (source (cera-pane :id 'source :kind 'readonly
+                              :bounds (cons (point-min) (point-max))))
+           (input (cera-pane :id 'input :kind 'input))
+           (field (cera-frame--make-field
+                   :input input :under (list status)
+                   :session (cera--make-session
+                             :panes (list context source hidden input)))))
+      (should (= (cera--pane-reach status 200)
+                 (+ (cera--text-column) 120)))
+      (should (= (cera--pane-reach context 200) 5))
+      (should (= (cera-frame--stacked-reach field 200)
+                 (+ (cera--text-column) 120)))
+      (setf (cera-frame--field-under field) nil)
+      (should (= (cera-frame--stacked-reach field 200) 5)))))
+
 (provide 'cera-frame-test)
 ;;; cera-frame-test.el ends here

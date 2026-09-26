@@ -49,6 +49,12 @@ the field."
   :type '(repeat (choice (const super) (const hyper) (const alt)))
   :group 'cera)
 
+(defcustom cera-frame-input-max-width 80
+  "Columns the input's text takes at most before it wraps, or nil for no cap.
+The field's face ends there too, rather than at the window's edge."
+  :type '(choice (const :tag "Window's edge" nil) natnum)
+  :group 'cera)
+
 (defcustom cera-frame-parameters '((persp-ignore-wconf . t))
   "Extra parameters put on the child frame the input is written in.
 They tell the workspace managers that keep a layout per frame to leave
@@ -227,12 +233,11 @@ it, so a command acting on the host alone never moves it."
                   scroll-conservatively 0))
     child))
 
-(defun cera-frame--background ()
-  "Return the field's background, for the frame around its text."
-  (let ((background (face-background 'default nil t)))
-    (if (color-defined-p background)
-        (cera--shaded background)
-      (face-background 'cera-body nil t))))
+(defun cera-frame--background (parent)
+  "Return the background of the frame around the field, PARENT's own.
+Only the input wears the field's face, so the bracket beside it and the
+room past its width stand on the buffer's ground."
+  (face-background 'default parent t))
 
 (defun cera-frame--parameters (parent background &optional fringes)
   "Return the parameters of a child frame over PARENT, drawn on BACKGROUND.
@@ -274,13 +279,12 @@ The frame hooks are held off: a workspace manager would take the frame
 for a new workspace and put its own buffer in it."
   (let* ((window (cera-frame--field-window field))
          (parent (window-frame window))
-         (background (cera-frame--background))
+         (background (cera-frame--background parent))
          (before-make-frame-hook nil)
          (after-make-frame-functions nil)
          (frame (make-frame (cera-frame--parameters
                              parent background (cera-frame--fringes window)))))
-    (when background
-      (set-face-background 'fringe background frame))
+    (set-face-background 'fringe (face-background 'fringe parent t) frame)
     (let ((view (frame-root-window frame)))
       (set-window-buffer view (cera-frame--field-child field))
       (set-window-dedicated-p view 'cera)
@@ -357,6 +361,7 @@ Return non-nil when the field holds a pane of that name."
                              :key #'cera-pane-id :test #'equal)))
     (setf (cera-pane-text pane) (cera--copy-content text))
     (cera-frame--hold-rows field (cera-frame--field-rows field) t)
+    (cera-frame--sync field)
     t))
 
 (defun cera-frame--hold-rows (field rows &optional force)
@@ -445,6 +450,7 @@ it."
              (line (window-default-line-height window)))
         (unless (= (frame-pixel-width frame) width)
           (set-frame-size frame width (frame-pixel-height frame) t))
+        (cera-frame--cap-width field)
         (let ((height (cera-frame--content-height field)))
           (cera-frame--hold-rows field (max 1 (round height line)))
           (unless (= (frame-pixel-height frame) height)
@@ -452,6 +458,43 @@ it."
           (cera-frame--pin field)))
       (cera-frame--place field)
       (cera-frame--keep-in-window field))))
+
+(defun cera-frame--stacked-reach (field width)
+  "Return the column the widest supplied pane stacked with FIELD's input ends at.
+WIDTH is the columns of the window the panes are drawn in."
+  (let ((panes (append (cera--session-panes (cera-frame--field-session field))
+                       (cera-frame--field-under field))))
+    (apply #'max 0
+           (mapcar (lambda (pane) (cera--pane-reach pane width))
+                   (cl-remove-if-not
+                    (lambda (pane)
+                      (and (eq (cera-pane-kind pane) 'readonly)
+                           (not (cera-pane-bounds pane))
+                           (cera--pane-visible-p pane)))
+                    panes)))))
+
+(defun cera-frame--cap-width (field)
+  "Narrow FIELD's window to `cera-frame-input-max-width' columns of input.
+The input still reaches as far as the widest pane stacked with it.  The
+rest of the window is given to its right margin."
+  (let* ((view (frame-root-window (cera-frame--field-frame field)))
+         (column (frame-char-width (cera-frame--field-frame field)))
+         (window (cera-frame--field-window field))
+         (margin
+          (with-current-buffer (cera-frame--field-child field)
+            (if (not cera-frame-input-max-width)
+                0
+              (let ((reach (+ (string-pixel-width (cera-frame--field-aligned field))
+                              (* column
+                                 (max (+ (cera--text-column)
+                                         cera-frame-input-max-width)
+                                      (cera-frame--stacked-reach
+                                       field (window-body-width window))))))
+                    (area (- (window-pixel-width view)
+                             (apply #'+ (cera-frame--fringes view)))))
+                (max 0 (/ (- area reach) column)))))))
+    (unless (eql margin (or (cdr (window-margins view)) 0))
+      (set-window-margins view 0 margin))))
 
 (defun cera-frame--pin (field)
   "Show FIELD's input from its first row, the line before it scrolled away.
@@ -490,12 +533,20 @@ nothing else would bring rows grown past its bottom into view."
     (cera-frame--sync field)))
 
 (defun cera-frame--follow (window &optional _start)
-  "Keep the frame over its rows as WINDOW is scrolled, resized or redrawn."
+  "Keep the frame over its rows as WINDOW is scrolled, resized or redrawn.
+Panes redrawn above the rows are measured again, as the input's width
+follows theirs."
   (when-let* ((field cera-frame--field)
               ((eq window (cera-frame--field-window field)))
               (frame (cera-frame--field-frame field))
               ((frame-live-p frame)))
-    (cera-frame--place field)))
+    (let ((placed (cera-frame--field-placed field)))
+      (if (and placed
+               (not (equal (nth 5 placed)
+                           (cera--session-static-overlays
+                            (cera-frame--field-session field)))))
+          (cera-frame--sync field)
+        (cera-frame--place field)))))
 
 (defun cera-frame--scrolled (window start)
   "Move the frame with WINDOW, which is about to show START at its top."

@@ -755,13 +755,13 @@ for it, however wide the display draws it, and the lines above the input
 reach the column the input starts at."
   (dolist (fixture '((nil 2 "one" ("╰ ") (()))
 		     (nil 2 "one\ntwo" ("│ " "╰ ") (() ()))
-		     ("*" 2 "one" ("╰ * ─ ") ((4)))
-		     ("ab" 2 "one" ("╰ ab ─ ") ((4)))
-		     ("*" 0 "one" ("╰ * ─ ") ((2)))
-		     ("*" 5 "one" ("╰ * ─ ") ((7)))
-		     ("*" 2 "one\ntwo" ("│  " "╰ * ─ ") ((6) (4)))
+		     ("*" 2 "one" ("╰ * ─  ") ((4)))
+		     ("ab" 2 "one" ("╰ ab ─  ") ((4)))
+		     ("*" 0 "one" ("╰ * ─  ") ((2)))
+		     ("*" 5 "one" ("╰ * ─  ") ((7)))
+		     ("*" 2 "one\ntwo" ("│   " "╰ * ─  ") ((6) (4)))
 		     ("*" 2 "one\ntwo\nthree"
-		      ("│  " "│  " "╰ * ─ ") ((6) (6) (4)))))
+		      ("│   " "│   " "╰ * ─  ") ((6) (6) (4)))))
     (pcase-let ((`(,prefix ,width ,initial ,drawn ,alignments) fixture))
       (with-temp-buffer
 	(insert "source\nnext")
@@ -773,7 +773,10 @@ reach the column the input starts at."
 		(let ((prefixes (cera-test--field-prefixes)))
 		  (should (equal prefixes drawn))
 		  (should (equal (mapcar #'cera-test--alignments prefixes)
-				 alignments)))
+				 alignments))
+		  (dolist (drawn prefixes)
+		    (should (equal (get-text-property (1- (length drawn)) 'face drawn)
+				   (cera--body-face)))))
 		(cera-accept))
 	    (should (equal (cera-read nil initial) initial))))
 	(should (equal (buffer-string) "source\nnext"))
@@ -791,7 +794,7 @@ the field's own lines and the column the input starts at follow along."
 	  (cera-input-prefix-width 2))
       (cera-test--reading
 	  (lambda ()
-	    (should (equal (cera-test--field-prefixes) '(" ╰ * ─ ")))
+	    (should (equal (cera-test--field-prefixes) '(" ╰ * ─  ")))
 	    (should (equal (cera-test--alignments
 			    (car (cera-test--field-prefixes)))
 			   '(4 8)))
@@ -860,7 +863,7 @@ that completes on its own."
     (let ((cera-input-prefix (lambda () (propertize ">" 'face 'cera-border))))
       (cera-test--reading
 	  (lambda ()
-	    (should (equal (cera-test--field-prefixes) '("╰ > ─ ")))
+	    (should (equal (cera-test--field-prefixes) '("╰ > ─  ")))
 	    (cera-accept))
 	(should (equal (cera-read nil "one") "one"))))))
 
@@ -1410,7 +1413,7 @@ that completes on its own."
 (ert-deftest cera-a-pane-may-start-where-the-input-s-text-does ()
   "An unbracketed pane aligned to the input is held off past its bracket and prefix."
   (let ((cera-indent 0) (cera-input-prefix-width 2))
-    (dolist (case '(("X" . 6) (nil . 2)))
+    (dolist (case '(("X" . 7) (nil . 2)))
       (let* ((cera-input-prefix (car case))
              (shown (cera--virtual-text
                      (cera-pane :id 'status :kind 'readonly :text "model"

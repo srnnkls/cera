@@ -32,11 +32,11 @@
   :group 'text
   :prefix "cera-")
 
-(defcustom cera-body-shade 10
-  "Percent the field's background moves away from the theme's own.
-Darker on a light theme and lighter on a dark one, so the field reads as
-the same surface with the text set into it rather than as a slab laid
-over it."
+(defcustom cera-body-shade 6
+  "Percent of the theme's foreground mixed into the field's background.
+The field moves towards the text's own colour, darker on a light theme
+and lighter on a dark one, and by as much as the theme's contrast is
+wide, so it reads as the same surface on either."
   :type 'natnum)
 
 (defcustom cera-completion-function #'cera-complete-with-table
@@ -271,10 +271,10 @@ OWNER is a field's session or panes shown outside one."
   "Bracket opening the field's last line.")
 
 (defconst cera--bracket-onward
-  (propertize "─ " 'face 'cera-border)
+  (propertize "─  " 'face 'cera-border)
   "Bracket carried on from the input's prefix into the input itself.
-It meets the prefix directly and holds the input off by the space the
-closing bracket holds the prefix off by.")
+It meets the prefix directly, and its last column is the one the
+input's face opens with, a column clear of the bracket.")
 
 (defvar cera--aligned ""
   "Prefix the lines the field is drawn beside are positioned by.
@@ -376,14 +376,13 @@ bracket carried on from it into the input."
                                          (- (cera--text-column) (cera--indent)))))))
 
 (defun cera--shaded (color)
-  "Return COLOR moved `cera-body-shade' percent away from the theme's own.
-Which way is away follows the colour's own lightness, so the field reads
-as the same surface on a light theme and on a dark one."
-  (let* ((rgb (color-name-to-rgb color))
-         (lightness (and rgb (nth 2 (apply #'color-rgb-to-hsl rgb)))))
-    (if (and lightness (> lightness 0.5))
-        (color-darken-name color cera-body-shade)
-      (color-lighten-name color cera-body-shade))))
+  "Return COLOR with `cera-body-shade' percent of the theme's foreground in it."
+  (let ((ink (color-name-to-rgb (face-foreground 'default nil t)))
+        (rgb (color-name-to-rgb color)))
+    (if (and ink rgb)
+        (apply #'color-rgb-to-hex
+               (append (color-blend ink rgb (/ cera-body-shade 100.0)) '(2)))
+      color)))
 
 (defun cera--body-face ()
   "Return the field's face: the theme's background, moved towards the field."
@@ -401,7 +400,8 @@ as the same surface on a light theme and on a dark one."
   "Return the columns occupied by PANE's bracket and optional prefix."
   (+ cera-bracket-width
      (if-let* ((prefix (cera--pane-prefix pane)))
-         (+ (max cera-input-prefix-width (string-width prefix)) 2)
+         (+ (max cera-input-prefix-width (string-width prefix))
+            (string-width cera--bracket-onward))
        0)))
 
 (defun cera--pane-visible-p (pane)
@@ -441,6 +441,23 @@ as the same surface on a light theme and on a dark one."
 
 (defvar cera-input-fontifier)
 
+(defun cera--padded (decoration face)
+  "Return DECORATION with the column closing it drawn in FACE, or as it is.
+The input's face then starts a column short of its text, which it would
+otherwise meet at the very edge."
+  (let* ((last (1- (length decoration)))
+         (display (and (>= last 0) (get-text-property last 'display decoration)))
+         (column (plist-get (cdr-safe display) :align-to)))
+    (cond
+     ((or (null face) (< last 0) (not (eq (aref decoration last) ?\s)))
+      decoration)
+     ((and (eq (car-safe display) 'space) (natnump column) (> column 0))
+      (concat (substring decoration 0 last)
+              (propertize " " 'display `(space :align-to ,(1- column)))
+              (propertize " " 'face face)))
+     (display decoration)
+     (t (concat (substring decoration 0 last) (propertize " " 'face face))))))
+
 (defun cera--draw-range (session pane begin end &optional aligned)
   "Decorate PANE's BEGIN to END in SESSION, following ALIGNED text.
 A fixed number of overlays per window covers any length of input."
@@ -449,10 +466,12 @@ A fixed number of overlays per window covers any length of input."
     (let* ((first-end (min end (1+ (line-end-position))))
            (last (save-excursion (goto-char (1- end)) (line-beginning-position)))
            (bracket (cera-pane-bracket pane))
-           (continued (and bracket (cera--pane-decoration pane 'middle aligned)))
-           (face (and (eq (cera-pane-kind pane) 'input)
-                      (not cera-input-fontifier)
-                      (or (cera-pane-face pane) (cera--body-face)))))
+           (input (eq (cera-pane-kind pane) 'input))
+           (body (and input (or (cera-pane-face pane) (cera--body-face))))
+           (continued (and bracket (cera--padded
+                                    (cera--pane-decoration pane 'middle aligned)
+                                    body)))
+           (face (and (not cera-input-fontifier) body)))
       (cera--overlay session begin end 'face face
                      'line-prefix continued 'wrap-prefix continued
                      'display-line-numbers-disable
@@ -466,9 +485,11 @@ A fixed number of overlays per window covers any length of input."
                                (list last end nil t))))
           (pcase-let ((`(,start ,stop ,first ,final) range))
             (cera--overlay session start stop 'priority 1002
-                           'line-prefix (cera--pane-decoration
-                                         pane (cera--pane-endpoint pane first final)
-                                         aligned))))))))
+                           'line-prefix (cera--padded
+                                         (cera--pane-decoration
+                                          pane (cera--pane-endpoint pane first final)
+                                          aligned)
+                                         body))))))))
 
 (defun cera--block-p (block)
   "Return non-nil when BLOCK is a run of lines a pane may stack.
@@ -554,6 +575,26 @@ Without WRAP a line too wide is cut short rather than carried on."
         (setq start (1+ break))))
     (nreverse rows)))
 
+(defun cera--pane-lead (pane)
+  "Return the columns in front of PANE's text on each of its rows."
+  (+ (cera--indent) (cera-pane-indent pane)
+     (cond ((cera-pane-bracket pane) (cera--pane-width pane))
+           ((eq (cera-pane-align pane) 'input)
+            (- (cera--text-column) (cera--indent)))
+           (t 0))))
+
+(defun cera--pane-text-rows (pane width)
+  "Return the rows PANE's supplied text takes within WIDTH columns."
+  (cera--pane-rows (cera--pane-blocks pane)
+                   (cera--capped pane (max 1 (- width (cera--pane-lead pane) 1)))
+                   (cera-pane-wrap pane)))
+
+(defun cera--pane-reach (pane width)
+  "Return the column PANE's widest row ends at, within WIDTH columns."
+  (+ (cera--pane-lead pane)
+     (apply #'max 0 (mapcar (lambda (row) (string-width (car row)))
+                            (cera--pane-text-rows pane width)))))
+
 (defun cera--virtual-text (pane width &optional aligned)
   "Render PANE's supplied text within WIDTH columns, following ALIGNED text.
 ALIGNED is the prefix the lines beside the field are drawn behind, and
@@ -562,16 +603,7 @@ every row the pane shows starts behind it as they do."
          (lead (and (not bracket) (eq (cera-pane-align pane) 'input)
                     (cera--input-lead aligned)))
          (indent (make-string (cera-pane-indent pane) ?\s))
-         (rows (cera--pane-rows
-                (cera--pane-blocks pane)
-                (cera--capped pane
-                              (max 1 (- width (cera--indent) (length indent)
-                                        (cond (bracket (cera--pane-width pane))
-                                              (lead (- (cera--text-column)
-                                                       (cera--indent)))
-                                              (t 0))
-                                        1)))
-                (cera-pane-wrap pane)))
+         (rows (cera--pane-text-rows pane width))
          (rows (if (and bracket (= (length rows) 1)
                         (not (cera-pane-connection pane)))
                    (append rows (list (cons "" "\n")))
