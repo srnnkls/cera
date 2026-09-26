@@ -678,6 +678,7 @@ A pane of the document and one hidden empty take no part in it."
            (field (cera-frame--make-field
                    :input input :under (list status)
                    :session (cera--make-session
+                             :input input
                              :panes (list context source hidden input)))))
       (should (= (cera--pane-reach status 200)
                  (+ (cera--text-column) 120)))

@@ -1163,7 +1163,8 @@ that completes on its own."
                    (shown (overlay-get overlay 'before-string))
                    (rows (split-string shown "\n" t)))
               (should (equal rows '("short" "rows")))
-              (should (eq (get-text-property 0 'face (car rows)) 'bold))
+              (should (equal (get-text-property 0 'face (car rows))
+                             (list 'bold (cera--pane-face))))
               (should-not (string-match-p "[╭╰│╮╯]" shown)))
             (cera-accept))
         (should (equal
@@ -1426,6 +1427,68 @@ that completes on its own."
     (should (cera-pane-wrap (cera-pane :id 'probe :kind 'readonly :text "")))
     (should-not (cera-pane-wrap (cera-pane :id 'probe :kind 'readonly
                                            :text "" :wrap nil)))))
+
+(ert-deftest cera-trailing-panes-open-a-row-under-an-empty-input ()
+  "A pane after the input is drawn as the newline closing it.
+The point at the end of the input stands on that newline, so the cursor
+stays on the input's row, and the panes stay under whatever is typed."
+  (with-temp-buffer
+    (insert "source line\nnext line\n")
+    (goto-char 3)
+    (let ((cera-input-backend 'buffer)
+          (cera-read-context-function
+           (lambda (panes)
+             (append panes (list (cera-pane :id 'status :kind 'readonly
+                                            :text "status" :bracket nil))))))
+      (cera-test--reading
+          (lambda ()
+            (cl-flet ((holder ()
+                        (cl-find-if (lambda (overlay) (overlay-get overlay 'display))
+                                    (overlays-in (point-min) (point-max)))))
+              (let ((shown (overlay-get (holder) 'display)))
+                (should (= (overlay-start (holder)) (cdr (cera--field-bounds))))
+                (should (string-prefix-p " \n" shown))
+                ;; An empty input still shows its box to the window's edge.
+                (should (get-text-property 1 'face shown))
+                ;; A string replacing text is drawn without its aligning spaces.
+                (should-not (text-property-not-all 2 (length shown) 'display nil
+                                                   shown))
+                (should (string-match-p "status" shown))
+                ;; The panes stand on the buffer's ground, not the input's shade.
+                (should (get-text-property (string-search "status" shown) 'face shown)))
+              (insert "typed")
+              (should (= (overlay-start (holder)) (cdr (cera--field-bounds))))
+              (should (equal (cera-test--input) "typed")))
+            (cera-accept))
+        (cera-read nil "")))))
+
+(ert-deftest cera-panes-align-to-the-input-s-own-prefix ()
+  "A pane aligned to the input starts where the input's text does.
+The input carries its prefix as a pane, whatever the option says when
+the panes are drawn again."
+  (with-temp-buffer
+    (insert "source line\nnext line\n")
+    (goto-char 3)
+    (let ((cera-input-backend 'buffer)
+          (cera-input-prefix nil))
+      (cera-test--reading
+          (lambda ()
+            (cera-update-pane 'status "status")
+            (let* ((shown (cl-some (lambda (overlay) (overlay-get overlay 'display))
+                                   (overlays-in (point-min) (point-max))))
+                   (lead (substring shown 2 (string-search "status" shown))))
+              (should (equal lead (make-string (+ (cera--indent)
+                                                  cera-bracket-width
+                                                  cera-input-prefix-width
+                                                  (string-width cera--bracket-onward))
+                                               ?\s))))
+            (cera-accept))
+        (cera-read-stack-in-buffer
+         (list (cera-pane :id 'source :kind 'readonly :bounds (cons 1 12))
+               (cera-pane :id 'input :kind 'input :prefix "*")
+               (cera-pane :id 'status :kind 'readonly :text "" :bracket nil
+                          :align 'input))
+         nil)))))
 
 (ert-deftest cera-a-pane-may-start-where-the-input-s-text-does ()
   "An unbracketed pane aligned to the input is held off past its bracket and prefix."

@@ -245,10 +245,13 @@ SESSION defaults to the reader active in this buffer."
 
 ;;;; Drawing
 
+(defvar cera--before-insertions nil
+  "Non-nil while overlays are made that text inserted at their start precedes.")
+
 (defun cera--overlay (owner begin end &rest properties)
   "Decorate BEGIN through END with PROPERTIES owned by OWNER.
 OWNER is a field's session or panes shown outside one."
-  (let ((overlay (make-overlay begin end nil nil t)))
+  (let ((overlay (make-overlay begin end nil cera--before-insertions t)))
     (overlay-put overlay 'priority 1001)
     (overlay-put overlay 'cera t)
     (while properties
@@ -282,6 +285,11 @@ input's face opens with, a column clear of the bracket.")
 Empty where they begin at the window's text area, which is where a
 column counted from it means what it says.")
 
+(defvar cera--plain-columns nil
+  "Non-nil while text is drawn where the display ignores aligning spaces.
+Columns are then left as plain spaces, counted from the window's text
+area where nothing is drawn in front of the field.")
+
 (defun cera--stretched-to (column &optional columns)
   "Return a space reaching to COLUMN of the window's text area.
 Its width is what is left to COLUMN as the display measures it, so a
@@ -289,9 +297,13 @@ glyph drawn wider than the characters it counts for is still followed to
 the same place.  Where the field is drawn behind a prefix of its own,
 a column of the text area is not where the field is, and COLUMNS plain
 ones are left instead."
-  (if (string-empty-p cera--aligned)
-      (propertize " " 'display `(space :align-to ,column))
-    (make-string (max 0 (or columns 0)) ?\s)))
+  (cond
+   (cera--plain-columns
+    (make-string (max 0 (or columns (if (string-empty-p cera--aligned) column 0)))
+                 ?\s))
+   ((string-empty-p cera--aligned)
+    (propertize " " 'display `(space :align-to ,column)))
+   (t (make-string (max 0 (or columns 0)) ?\s))))
 
 (defconst cera-bracket-width (string-width cera--bracket-last)
   "Columns the bracket takes before the text it opens.")
@@ -682,7 +694,10 @@ A line carries its `line-prefix' at its start, so an ANCHOR opening one
 would draw that line's bracket over the panes.  The overlay is put at the
 end of the line above instead, where the panes fill lines of their own.
 The first line of a buffer has no line above to put them on, so OPENING
-carries its bracket, drawn after the panes and before the line's text."
+carries its bracket, drawn after the panes and before the line's text.
+The panes open a row of their own under the line above, even an empty
+one, and wear the buffer's default face under their own rather than
+that of the line they hang from."
   (let ((origin (if (and (> anchor (point-min))
                          (save-excursion (goto-char anchor) (bolp)))
                     (1- anchor)
@@ -694,18 +709,19 @@ carries its bracket, drawn after the panes and before the line's text."
                                          pane (cdr geometry) aligned))
                                       panes "")
                            opening))
-             (text (concat (unless (save-excursion (goto-char origin) (bolp))
-                             (if shown
-                                 (propertize "\n" 'face (get-text-property origin 'face))
-                               "\n"))
-                           (if shown (cera--own-face body) body)))
+             (text (concat (when (or (/= origin anchor)
+                                     (not (save-excursion (goto-char origin) (bolp))))
+                             (propertize "\n" 'face (and shown (get-text-property
+                                                                origin 'face))))
+                           (cera--own-face body)))
              (closing (cera--closing-newline text origin))
-             (overlay (cera--overlay owner origin (if closing (1+ origin) origin)
-                                     'window (car geometry)
-                                     'before-string
-                                     (if closing
-                                         (substring text 0 (1- (length text)))
-                                       text))))
+             (overlay (let ((cera--before-insertions t))
+                        (cera--overlay owner origin (if closing (1+ origin) origin)
+                                       'window (car geometry)
+                                       'before-string
+                                       (if closing
+                                           (substring text 0 (1- (length text)))
+                                         text)))))
         (when closing
           (overlay-put overlay 'line-spacing closing)
           (overlay-put overlay 'evaporate nil)
@@ -737,12 +753,19 @@ Virtual panes hang off the end of the line above the one they precede,
 which the first line of a buffer has not got."
   (and panes (= start (point-min))))
 
+(defun cera--input-prefix-of (session)
+  "Return the prefix SESSION's input is drawn behind, or nil.
+Panes aligned to the input measure its column by this, not by
+`cera-input-prefix' as it stands when they are drawn again."
+  (cera-pane-prefix (cera--session-input session)))
+
 (defun cera--draw-static (session)
   "Refresh SESSION's read-only panes, leaving its input overlays intact."
   (mapc #'delete-overlay (cera--session-static-overlays session))
   (setf (cera--session-static-overlays session) nil
         (cera--session-width session) (cera--display-widths))
   (let ((cera--drawing-static t)
+        (cera-input-prefix (cera--input-prefix-of session))
         (tail (cera--session-tail session)) pending)
     (dolist (pane (cl-remove-if-not #'cera--pane-visible-p
                                     (cera--session-panes session)))
@@ -798,9 +821,50 @@ which the first line of a buffer has not got."
               (setq pending nil)))
         (push pane pending)))
     (when pending
-      (cera--draw-virtual session (nreverse pending) tail
-                          (cera--session-width session)
-                          (cera--session-aligned session)))))
+      (if (and (eq tail (cera--session-tail session))
+               (cera--session-end session))
+          (cera--draw-after-input session (nreverse pending))
+        (cera--draw-virtual session (nreverse pending) tail
+                            (cera--session-width session)
+                            (cera--session-aligned session))))))
+
+(defun cera--draw-after-input (session panes)
+  "Display SESSION's PANES as the newline closing its input.
+The point stands on that newline at the end of the input, and text drawn
+before it would take the cursor, and where the point is reported to be,
+past the panes.  The panes drawn in place of that newline, after a
+space the cursor can stand on, keep both at the end of the input.  A
+string replacing text is drawn without the spaces aligning it, so the
+panes are held off by plain columns, as many as what the input's lines
+are drawn behind measures."
+  (let* ((end (cera--session-end session))
+         (behind (concat (cera--line-number-pad) (cera--session-aligned session)))
+         (aligned (make-string (round (string-pixel-width behind) (default-font-width))
+                               ?\s))
+         (body (or (cera-pane-face (cera--session-input session)) (cera--body-face)))
+         (cera--plain-columns t)
+         (cera--before-insertions t))
+    (dolist (geometry (cera--session-width session))
+      (cera--overlay session end (1+ end)
+                     'window (car geometry)
+                     'display
+                     (concat (propertize " \n" 'face body)
+                             (cera--own-face
+                              (mapconcat (lambda (pane)
+                                           (cera--virtual-text pane (cdr geometry) aligned))
+                                         panes "")))))))
+
+(defun cera--input-pixel ()
+  "Return the pixel the input's text starts at, across the window's text area.
+The display puts the start of a field line showing nothing of its own,
+as an empty field's is, at the edge of the window rather than past the
+bracket in front of it, so what is drawn at it asks here instead."
+  (let ((aligned (concat (cera--line-number-pad) (cera--session-aligned cera--active)))
+        (cera-input-prefix (cera--input-prefix-of cera--active)))
+    (if (string-empty-p aligned)
+        (* (cera--text-column) (default-font-width))
+      (+ (string-pixel-width aligned)
+         (* (- (cera--text-column) (cera--indent)) (default-font-width))))))
 
 (defun cera--draw ()
   "Refresh only the writable pane's brackets and block face."

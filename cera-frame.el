@@ -352,7 +352,9 @@ the last row, and `cera-space-below' is kept under it."
               (panes (cl-remove-if-not #'cera--pane-visible-p
                                        (cera-frame--field-under field))))
     (with-current-buffer (cera-frame--field-parent field)
-      (let ((cera--aligned (cera-frame--field-source-prefix field)))
+      (let ((cera--aligned (cera-frame--field-source-prefix field))
+            (cera-input-prefix
+             (cera--input-prefix-of (cera-frame--field-session field))))
         (mapconcat (lambda (pane)
                      (cera--virtual-text pane (window-body-width window)
                                          cera--aligned))
@@ -467,7 +469,9 @@ it."
 (defun cera-frame--stacked-reach (field width)
   "Return the column the widest supplied pane stacked with FIELD's input ends at.
 WIDTH is the columns of the window the panes are drawn in."
-  (let ((panes (append (cera--session-panes (cera-frame--field-session field))
+  (let ((cera-input-prefix
+         (cera--input-prefix-of (cera-frame--field-session field)))
+        (panes (append (cera--session-panes (cera-frame--field-session field))
                        (cera-frame--field-under field))))
     (apply #'max 0
            (mapcar (lambda (pane) (cera--pane-reach pane width))
@@ -489,14 +493,16 @@ rest of the window is given to its right margin."
           (with-current-buffer (cera-frame--field-child field)
             (if (not cera-frame-input-max-width)
                 0
-              (let ((reach (+ (string-pixel-width (cera-frame--field-aligned field))
-                              (* column
-                                 (max (+ (cera--text-column)
-                                         cera-frame-input-max-width)
-                                      (cera-frame--stacked-reach
-                                       field (window-body-width window))))))
-                    (area (- (window-pixel-width view)
-                             (apply #'+ (cera-frame--fringes view)))))
+              (let* ((cera-input-prefix
+                      (cera--input-prefix-of (cera-frame--field-session field)))
+                     (reach (+ (string-pixel-width (cera-frame--field-aligned field))
+                               (* column
+                                  (max (+ (cera--text-column)
+                                          cera-frame-input-max-width)
+                                       (cera-frame--stacked-reach
+                                        field (window-body-width window))))))
+                     (area (- (window-pixel-width view)
+                              (apply #'+ (cera-frame--fringes view)))))
                 (max 0 (/ (- area reach) column)))))))
     (unless (eql margin (or (cdr (window-margins view)) 0))
       (set-window-margins view 0 margin))))
