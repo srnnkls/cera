@@ -152,6 +152,18 @@ long field costs what a keystroke in a short one does."
       (should (buffer-match-p global-hl-line-buffers (current-buffer)))
       (should-not (local-variable-p 'global-hl-line-buffers)))))
 
+(ert-deftest cera-reads-colours-through-the-buffer-s-face-remapping ()
+  "A buffer remapping its faces shows those colours, and the field follows them."
+  (with-temp-buffer
+    (setq-local face-remapping-alist
+                '((default (:background "#101010" :foreground "#eeeeee") default)
+                  (line-number (:background "#202020") line-number)))
+    (should (equal (cera--background) "#101010"))
+    (should (equal (cera--foreground) "#eeeeee"))
+    (should (equal (cera--remapped 'line-number :background) "#202020"))
+    (should-not (cera--remapped 'fringe :background))
+    (should (equal (plist-get (cera--pane-face) :background) "#101010"))))
+
 (ert-deftest cera-keeps-the-point-a-buffer-puts-back-where-it-wants-it ()
   "A buffer holding the point after every command does not hold the field's.
 A dashboard repositions the point on `post-command-hook'; the field puts

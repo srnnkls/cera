@@ -329,7 +329,9 @@ line; the rows come after its newline, the pane before it."
       (should (equal child-ids '(input)))
       (should (equal parent-ids '(source input later)))
       (should (string-match-p "╰ \n\\(.\\|\n\\)*shown under\\'" held))
-      (should-not (get-text-property (string-search "shown" held) 'face held))
+      ;; On the buffer's own ground, not the field's nor the line's above.
+      (should (equal (get-text-property (string-search "shown" held) 'face held)
+                     (cera--pane-face)))
       (should bracketed))
     (should-not cera--active)
     (should-not (overlays-in (point-min) (point-max)))))

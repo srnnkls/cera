@@ -210,6 +210,10 @@ it, so a command acting on the host alone never moves it."
         (child (generate-new-buffer " *cera-frame*" t)))
     (with-current-buffer child
       (text-mode)
+      ;; Wear the parent's faces, not those a mode dimming buffers without a
+      ;; file gave this one as `text-mode' set it up.
+      (setq-local face-remapping-alist
+                  (copy-tree (buffer-local-value 'face-remapping-alist parent)))
       (dolist (symbol cera-frame--copied-locals)
         (set (make-local-variable symbol) (buffer-local-value symbol parent)))
       (add-hook 'pre-command-hook #'cera-frame--host-command nil t)
@@ -233,11 +237,11 @@ it, so a command acting on the host alone never moves it."
                   scroll-conservatively 0))
     child))
 
-(defun cera-frame--background (parent)
-  "Return the background of the frame around the field, PARENT's own.
+(defun cera-frame--background (buffer)
+  "Return the background of the frame around the field, BUFFER's own.
 Only the input wears the field's face, so the bracket beside it and the
 room past its width stand on the buffer's ground."
-  (face-background 'default parent t))
+  (with-current-buffer buffer (cera--background)))
 
 (defun cera-frame--parameters (parent background &optional fringes)
   "Return the parameters of a child frame over PARENT, drawn on BACKGROUND.
@@ -279,7 +283,7 @@ The frame hooks are held off: a workspace manager would take the frame
 for a new workspace and put its own buffer in it."
   (let* ((window (cera-frame--field-window field))
          (parent (window-frame window))
-         (background (cera-frame--background parent))
+         (background (cera-frame--background (cera-frame--field-parent field)))
          (before-make-frame-hook nil)
          (after-make-frame-functions nil)
          (frame (make-frame (cera-frame--parameters
@@ -330,14 +334,15 @@ the last row, and `cera-space-below' is kept under it."
     (setf (cera-frame--field-under-rows field)
           (if under (cl-count ?\n under) 0))
     (propertize
-     (concat (unless (and below
-                          (with-current-buffer (cera-frame--field-parent field)
-                            (save-excursion
-                              (goto-char (cera-frame--field-anchor field))
-                              (bolp))))
-               "\n")
-             text
-             (and under (concat "\n" (string-remove-suffix "\n" under))))
+     (with-current-buffer (cera-frame--field-parent field)
+       (cera--own-face
+        (concat (unless (and below
+                             (save-excursion
+                               (goto-char (cera-frame--field-anchor field))
+                               (bolp)))
+                  "\n")
+                text
+                (and under (concat "\n" (string-remove-suffix "\n" under))))))
      'line-prefix "" 'wrap-prefix "")))
 
 (defun cera-frame--under-text (field)

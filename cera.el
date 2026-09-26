@@ -384,9 +384,30 @@ bracket carried on from it into the input."
                (append (color-blend ink rgb (/ cera-body-shade 100.0)) '(2)))
       color)))
 
+(defun cera--remapped (face attribute)
+  "Return the colour ATTRIBUTE of FACE as this buffer remaps it, or nil.
+A mode dimming the buffers it takes for scratch ones remaps faces in
+them rather than changing the faces themselves."
+  (cl-some (lambda (spec)
+             (let ((color (if (facep spec)
+                              (face-attribute spec attribute)
+                            (plist-get spec attribute))))
+               (and (stringp color) color)))
+           (alist-get face face-remapping-alist)))
+
+(defun cera--background ()
+  "Return the background this buffer shows, through its face remapping."
+  (or (cera--remapped 'default :background)
+      (face-background 'default nil t)))
+
+(defun cera--foreground ()
+  "Return the foreground this buffer shows, through its face remapping."
+  (or (cera--remapped 'default :foreground)
+      (face-foreground 'default nil t)))
+
 (defun cera--body-face ()
   "Return the field's face: the theme's background, moved towards the field."
-  (let ((background (face-background 'default nil t)))
+  (let ((background (cera--background)))
     (if (color-defined-p background)
         `(:inherit cera-body :background ,(cera--shaded background))
       'cera-body)))
@@ -648,8 +669,8 @@ every row the pane shows starts behind it as they do."
 A display string is drawn over the face of the text it is shown at, and
 naming the default face overrides nothing there, so its colours are
 spelled out, and carried to the window's edge past a row's end."
-  (list :foreground (face-foreground 'default nil t)
-        :background (face-background 'default nil t)
+  (list :foreground (cera--foreground)
+        :background (cera--background)
         :extend t))
 
 (defun cera--draw-virtual (owner panes anchor widths aligned &optional opening)
