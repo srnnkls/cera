@@ -1618,6 +1618,36 @@ Its own lines push the native numbers along; they come back with it."
       (should (equal (cera-read nil "") "written")))
     (should (eq (command-remapping #'self-insert-command) 'undefined))))
 
+(defvar cera-test-forwarding-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [remap self-insert-command] #'cera-test--forward-key)
+    map)
+  "A map sending typed keys on the way a terminal's does.")
+
+(defun cera-test--forward-key ()
+  "Stand in for a terminal command taking a typed key."
+  (interactive)
+  (error "The key went to the terminal"))
+
+(define-derived-mode cera-test-forwarding-mode fundamental-mode "Forwarding"
+  "A mode sending typing on rather than inserting it.")
+
+(ert-deftest cera-a-field-takes-letters-where-the-mode-map-sends-them-on ()
+  "A buffer remapping typing to a command of its own lends it to the field."
+  (with-temp-buffer
+    (cera-test-forwarding-mode)
+    (insert "$ make\n")
+    (goto-char (point-min))
+    (cera-test--reading
+        (lambda ()
+          (should-not (command-remapping #'self-insert-command))
+          (should (eq (key-binding "a") 'self-insert-command))
+          (insert "written")
+          (cera-accept))
+      (should (equal (cera-read nil "") "written")))
+    (should (eq (command-remapping #'self-insert-command)
+                'cera-test--forward-key))))
+
 (defun cera-test--virtual-overlay ()
   "Return the overlay carrying the active session's virtual panes."
   (seq-find (lambda (overlay) (overlay-get overlay 'before-string))
