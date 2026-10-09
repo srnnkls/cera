@@ -93,6 +93,25 @@ buffer's text while the field was open."
       (should (string-match-p "\\`\n.*╰ \\'" (nth 1 held)))
       (should (= (nth 2 held) 8)))))
 
+(ert-deftest cera-frame-closes-the-held-rows-on-the-buffer-ground ()
+  "The newline closing the held rows wears the buffer's face over the region's.
+A region over the source line, as a context is often marked, runs on
+through that newline, and would be drawn to the window's edge after
+the last pane under the rows."
+  (with-temp-buffer
+    (insert "alpha\nnext\n")
+    (let ((cera-input-backend 'frame)
+          (buffer (current-buffer))
+          face expected)
+      (cera-frame-test--reading
+          (lambda ()
+            (with-current-buffer buffer
+              (setq expected (cera--pane-face)
+                    face (get-char-property 6 'face)))
+            (cera-accept))
+        (cera-read nil "note" (cons 1 6)))
+      (should (equal face expected)))))
+
 (ert-deftest cera-frame-puts-the-buffer-back-on-accept-and-cancel ()
   "The buffer's overlays, settings and child buffer go with the field."
   (dolist (leave (list #'cera-accept #'cera-cancel))

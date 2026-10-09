@@ -684,7 +684,8 @@ redisplay runs this hook crashes the macOS port mid input-method switch."
                         nil t nil))
     ;; Above the panes' own, so that where both hang off the end of the
     ;; buffer the rows come after them.
-    (overlay-put (cera-frame--field-holder field) 'priority 1002))
+    (overlay-put (cera-frame--field-holder field) 'priority 1002)
+    (overlay-put (cera-frame--field-holder field) 'face (cera--pane-face)))
   (cera--draw-static (cera-frame--field-session field)))
 
 (defun cera-frame--close (field)
